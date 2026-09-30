@@ -19,6 +19,9 @@ export default function HomeScreen() {
   const [draft, setDraft] = useState('');
   const [lastPrompt, setLastPrompt] = useState('');
   const [listening, setListening] = useState(false);
+  const [reply, setReply] = useState('');
+  const [thinking, setThinking] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   const drift = useRef(new Animated.Value(0)).current;
   const breathe = useRef(new Animated.Value(0)).current;
@@ -114,16 +117,64 @@ export default function HomeScreen() {
     outputRange: [0.9, 1.05],
   });
 
-  function submitPrompt() {
-    const message = draft.trim();
+  async function submitPrompt() {
+  const message = draft.trim();
 
-    if (!message) {
-      return;
+  if (!message || thinking) {
+    return;
+  }
+
+  const apiUrl = process.env.EXPO_PUBLIC_A2_API_URL;
+
+  if (!apiUrl) {
+    setErrorMessage('A2 API URL is not configured.');
+    return;
+  }
+
+  setLastPrompt(message);
+  setDraft('');
+  setReply('');
+  setErrorMessage('');
+  setThinking(true);
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+
+      headers: {
+        'Content-Type': 'application/json',
+      },
+
+      body: JSON.stringify({
+        message,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error || 'A2 could not complete the request.'
+      );
     }
 
-    setLastPrompt(message);
-    setDraft('');
+    if (!data?.reply) {
+      throw new Error('A2 returned an empty response.');
+    }
+
+    setReply(data.reply);
+  } catch (error) {
+    console.error(error);
+
+    setErrorMessage(
+      error instanceof Error
+        ? error.message
+        : 'A2 could not reach the server.'
+    );
+  } finally {
+    setThinking(false);
   }
+}
 
   return (
     <View style={styles.screen}>
@@ -282,16 +333,34 @@ export default function HomeScreen() {
           </Pressable>
 
           <Text style={styles.mode}>
-            {listening ? 'Listening…' : 'Tap to speak'}
-          </Text>
+  {thinking
+    ? 'Thinking…'
+    : listening
+      ? 'Listening…'
+      : 'Tap to speak'}
+</Text>
 
-          {lastPrompt ? (
-            <Text style={styles.lastPrompt} numberOfLines={2}>
-              {lastPrompt}
-            </Text>
-          ) : (
-            <Text style={styles.question}>What do you need?</Text>
-          )}
+          {thinking ? (
+  <Text style={styles.question}>
+    Working on it.
+  </Text>
+) : errorMessage ? (
+  <Text style={styles.lastPrompt}>
+    {errorMessage}
+  </Text>
+) : reply ? (
+  <Text style={styles.lastPrompt}>
+    {reply}
+  </Text>
+) : lastPrompt ? (
+  <Text style={styles.lastPrompt} numberOfLines={2}>
+    {lastPrompt}
+  </Text>
+) : (
+  <Text style={styles.question}>
+    What do you need?
+  </Text>
+)}
         </View>
 
         <View style={styles.composerArea}>
@@ -309,10 +378,10 @@ export default function HomeScreen() {
 
             <Pressable
               onPress={submitPrompt}
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || thinking}
               style={[
                 styles.sendButton,
-                !draft.trim() && styles.sendButtonDisabled,
+                (!draft.trim() || thinking) && styles.sendButtonDisabled,
               ]}
             >
               <Text style={styles.sendArrow}>↑</Text>
