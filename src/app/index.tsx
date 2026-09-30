@@ -1,11 +1,14 @@
+import type { Session } from '@supabase/supabase-js';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
+
 import {
   Animated,
   Easing,
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -13,8 +16,22 @@ import {
   View,
 } from 'react-native';
 
+import AuthScreen from '../components/AuthScreen';
+import { supabase } from '../lib/supabase';
+
 export default function HomeScreen() {
   const { width, height } = useWindowDimensions();
+
+  // ------------------------------------------------------------
+  // AUTHENTICATION
+  // ------------------------------------------------------------
+
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // ------------------------------------------------------------
+  // A2 INTERFACE STATE
+  // ------------------------------------------------------------
 
   const [draft, setDraft] = useState('');
   const [lastPrompt, setLastPrompt] = useState('');
@@ -23,8 +40,49 @@ export default function HomeScreen() {
   const [thinking, setThinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
+  // ------------------------------------------------------------
+  // A2 ANIMATION VALUES
+  // ------------------------------------------------------------
+
   const drift = useRef(new Animated.Value(0)).current;
   const breathe = useRef(new Animated.Value(0)).current;
+
+  // ------------------------------------------------------------
+  // RESTORE / WATCH SUPABASE SESSION
+  // ------------------------------------------------------------
+
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) {
+        return;
+      }
+
+      if (error) {
+        console.error('A2 session restore error:', error);
+      }
+
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // ------------------------------------------------------------
+  // A2 CORE ANIMATION
+  // ------------------------------------------------------------
 
   useEffect(() => {
     const driftLoop = Animated.loop(
@@ -35,6 +93,7 @@ export default function HomeScreen() {
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: false,
         }),
+
         Animated.timing(drift, {
           toValue: 0,
           duration: 5200,
@@ -52,6 +111,7 @@ export default function HomeScreen() {
           easing: Easing.inOut(Easing.sin),
           useNativeDriver: false,
         }),
+
         Animated.timing(breathe, {
           toValue: 0,
           duration: 3200,
@@ -70,17 +130,38 @@ export default function HomeScreen() {
     };
   }, [breathe, drift]);
 
+  // ------------------------------------------------------------
+  // GREETING
+  // ------------------------------------------------------------
+
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
 
-    if (hour < 12) return 'Good morning';
-    if (hour < 18) return 'Good afternoon';
+    if (hour < 12) {
+      return 'Good morning';
+    }
+
+    if (hour < 18) {
+      return 'Good afternoon';
+    }
 
     return 'Good evening';
   }, []);
 
+  // ------------------------------------------------------------
+  // RESPONSIVE SIZE CALCULATIONS
+  // ------------------------------------------------------------
+
   const orbSize = Math.min(Math.max(width * 0.38, 165), 300);
-  const gridSize = Math.min(Math.max(width * 1.05, 600), 1100);
+
+  const gridSize = Math.min(
+    Math.max(width * 1.05, 600),
+    1100
+  );
+
+  // ------------------------------------------------------------
+  // ANIMATION INTERPOLATION
+  // ------------------------------------------------------------
 
   const layerOneTranslateX = drift.interpolate({
     inputRange: [0, 1],
@@ -117,70 +198,111 @@ export default function HomeScreen() {
     outputRange: [0.9, 1.05],
   });
 
+  // ------------------------------------------------------------
+  // SEND MESSAGE TO CURRENT A2 BACKEND
+  // ------------------------------------------------------------
+
   async function submitPrompt() {
-  const message = draft.trim();
+    const message = draft.trim();
 
-  if (!message || thinking) {
-    return;
-  }
+    if (!message || thinking) {
+      return;
+    }
 
-  const apiUrl = process.env.EXPO_PUBLIC_A2_API_URL;
+    const apiUrl =
+      process.env.EXPO_PUBLIC_A2_API_URL;
 
-  if (!apiUrl) {
-    setErrorMessage('A2 API URL is not configured.');
-    return;
-  }
-
-  setLastPrompt(message);
-  setDraft('');
-  setReply('');
-  setErrorMessage('');
-  setThinking(true);
-
-  try {
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-
-      headers: {
-        'Content-Type': 'application/json',
-      },
-
-      body: JSON.stringify({
-        message,
-      }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error || 'A2 could not complete the request.'
+    if (!apiUrl) {
+      setErrorMessage(
+        'A2 API URL is not configured.'
       );
+      return;
     }
 
-    if (!data?.reply) {
-      throw new Error('A2 returned an empty response.');
+    setLastPrompt(message);
+    setDraft('');
+    setReply('');
+    setErrorMessage('');
+    setThinking(true);
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+
+        headers: {
+          'Content-Type': 'application/json',
+        },
+
+        body: JSON.stringify({
+          message,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+            'A2 could not complete the request.'
+        );
+      }
+
+      if (!data?.reply) {
+        throw new Error(
+          'A2 returned an empty response.'
+        );
+      }
+
+      setReply(data.reply);
+    } catch (error) {
+      console.error(error);
+
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'A2 could not reach the server.'
+      );
+    } finally {
+      setThinking(false);
     }
-
-    setReply(data.reply);
-  } catch (error) {
-    console.error(error);
-
-    setErrorMessage(
-      error instanceof Error
-        ? error.message
-        : 'A2 could not reach the server.'
-    );
-  } finally {
-    setThinking(false);
   }
-}
+
+  // ------------------------------------------------------------
+  // AUTH LOADING SCREEN
+  // ------------------------------------------------------------
+
+  if (authLoading) {
+    return (
+      <View style={styles.authLoadingScreen}>
+        <StatusBar style="dark" />
+      </View>
+    );
+  }
+
+  // ------------------------------------------------------------
+  // PRIVATE AUTH SCREEN
+  // ------------------------------------------------------------
+
+  if (!session) {
+    return <AuthScreen />;
+  }
+
+  // ------------------------------------------------------------
+  // MAIN A2 INTERFACE
+  // ------------------------------------------------------------
 
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
 
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      {/* ------------------------------------------------------ */}
+      {/* FAINT LATITUDE / LONGITUDE BACKGROUND                  */}
+      {/* ------------------------------------------------------ */}
+
+      <View
+        pointerEvents="none"
+        style={StyleSheet.absoluteFill}
+      >
         <View
           style={[
             styles.globeGrid,
@@ -221,27 +343,72 @@ export default function HomeScreen() {
             ]}
           />
 
-          <View style={[styles.latitude, { top: '22%' }]} />
-          <View style={[styles.latitude, { top: '36%' }]} />
-          <View style={[styles.latitude, { top: '50%' }]} />
-          <View style={[styles.latitude, { top: '64%' }]} />
-          <View style={[styles.latitude, { top: '78%' }]} />
+          <View
+            style={[
+              styles.latitude,
+              { top: '22%' },
+            ]}
+          />
+
+          <View
+            style={[
+              styles.latitude,
+              { top: '36%' },
+            ]}
+          />
+
+          <View
+            style={[
+              styles.latitude,
+              { top: '50%' },
+            ]}
+          />
+
+          <View
+            style={[
+              styles.latitude,
+              { top: '64%' },
+            ]}
+          />
+
+          <View
+            style={[
+              styles.latitude,
+              { top: '78%' },
+            ]}
+          />
         </View>
       </View>
 
       <KeyboardAvoidingView
         style={styles.interface}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={
+          Platform.OS === 'ios'
+            ? 'padding'
+            : undefined
+        }
       >
+        {/* ---------------------------------------------------- */}
+        {/* HEADER                                               */}
+        {/* ---------------------------------------------------- */}
+
         <View style={styles.header}>
           <Text style={styles.brand}>A2</Text>
         </View>
 
+        {/* ---------------------------------------------------- */}
+        {/* CENTER EXPERIENCE                                    */}
+        {/* ---------------------------------------------------- */}
+
         <View style={styles.center}>
-          <Text style={styles.greeting}>{greeting}, Tony.</Text>
+          <Text style={styles.greeting}>
+            {greeting}, Tony.
+          </Text>
 
           <Pressable
-            onPress={() => setListening((current) => !current)}
+            onPress={() =>
+              setListening((current) => !current)
+            }
             style={styles.orbButton}
           >
             <View
@@ -258,10 +425,20 @@ export default function HomeScreen() {
                   styles.blobLarge,
                   {
                     transform: [
-                      { translateX: layerOneTranslateX },
-                      { translateY: layerOneTranslateY },
-                      { scale: layerOneScale },
-                      { rotate: '-9deg' },
+                      {
+                        translateX:
+                          layerOneTranslateX,
+                      },
+                      {
+                        translateY:
+                          layerOneTranslateY,
+                      },
+                      {
+                        scale: layerOneScale,
+                      },
+                      {
+                        rotate: '-9deg',
+                      },
                     ],
                   },
                 ]}
@@ -272,10 +449,20 @@ export default function HomeScreen() {
                   styles.blobMedium,
                   {
                     transform: [
-                      { translateX: layerTwoTranslateX },
-                      { translateY: layerTwoTranslateY },
-                      { scale: layerTwoScale },
-                      { rotate: '13deg' },
+                      {
+                        translateX:
+                          layerTwoTranslateX,
+                      },
+                      {
+                        translateY:
+                          layerTwoTranslateY,
+                      },
+                      {
+                        scale: layerTwoScale,
+                      },
+                      {
+                        rotate: '13deg',
+                      },
                     ],
                   },
                 ]}
@@ -285,7 +472,12 @@ export default function HomeScreen() {
                 style={[
                   styles.blobSmall,
                   {
-                    transform: [{ scale: layerThreeScale }],
+                    transform: [
+                      {
+                        scale:
+                          layerThreeScale,
+                      },
+                    ],
                   },
                 ]}
               />
@@ -294,7 +486,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixel,
                   styles.pixelOne,
-                  listening && styles.pixelListening,
+                  listening &&
+                    styles.pixelListening,
                 ]}
               />
 
@@ -302,7 +495,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixel,
                   styles.pixelTwo,
-                  listening && styles.pixelListening,
+                  listening &&
+                    styles.pixelListening,
                 ]}
               />
 
@@ -310,7 +504,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixel,
                   styles.pixelThree,
-                  listening && styles.pixelListening,
+                  listening &&
+                    styles.pixelListening,
                 ]}
               />
 
@@ -318,7 +513,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixelTiny,
                   styles.pixelFour,
-                  listening && styles.pixelListening,
+                  listening &&
+                    styles.pixelListening,
                 ]}
               />
 
@@ -326,42 +522,67 @@ export default function HomeScreen() {
                 style={[
                   styles.pixelTiny,
                   styles.pixelFive,
-                  listening && styles.pixelListening,
+                  listening &&
+                    styles.pixelListening,
                 ]}
               />
             </View>
           </Pressable>
 
+          {/* -------------------------------------------------- */}
+          {/* A2 STATE                                           */}
+          {/* -------------------------------------------------- */}
+
           <Text style={styles.mode}>
-  {thinking
-    ? 'Thinking…'
-    : listening
-      ? 'Listening…'
-      : 'Tap to speak'}
-</Text>
+            {thinking
+              ? 'Thinking…'
+              : listening
+                ? 'Listening…'
+                : 'Tap to speak'}
+          </Text>
+
+          {/* -------------------------------------------------- */}
+          {/* RESPONSE AREA                                      */}
+          {/* -------------------------------------------------- */}
 
           {thinking ? (
-  <Text style={styles.question}>
-    Working on it.
-  </Text>
-) : errorMessage ? (
-  <Text style={styles.lastPrompt}>
-    {errorMessage}
-  </Text>
-) : reply ? (
-  <Text style={styles.lastPrompt}>
-    {reply}
-  </Text>
-) : lastPrompt ? (
-  <Text style={styles.lastPrompt} numberOfLines={2}>
-    {lastPrompt}
-  </Text>
-) : (
-  <Text style={styles.question}>
-    What do you need?
-  </Text>
-)}
+            <Text style={styles.question}>
+              Working on it.
+            </Text>
+          ) : errorMessage ? (
+            <Text style={styles.lastPrompt}>
+              {errorMessage}
+            </Text>
+          ) : reply ? (
+            <View style={styles.replyShell}>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={
+                  styles.replyContent
+                }
+              >
+                <Text style={styles.replyText}>
+                  {reply}
+                </Text>
+              </ScrollView>
+            </View>
+          ) : lastPrompt ? (
+            <Text
+              style={styles.lastPrompt}
+              numberOfLines={2}
+            >
+              {lastPrompt}
+            </Text>
+          ) : (
+            <Text style={styles.question}>
+              What do you need?
+            </Text>
+          )}
         </View>
+
+        {/* ---------------------------------------------------- */}
+        {/* INPUT                                                */}
+        {/* ---------------------------------------------------- */}
 
         <View style={styles.composerArea}>
           <View style={styles.composer}>
@@ -378,24 +599,42 @@ export default function HomeScreen() {
 
             <Pressable
               onPress={submitPrompt}
-              disabled={!draft.trim() || thinking}
+              disabled={
+                !draft.trim() || thinking
+              }
               style={[
                 styles.sendButton,
-                (!draft.trim() || thinking) && styles.sendButtonDisabled,
+
+                (!draft.trim() ||
+                  thinking) &&
+                  styles.sendButtonDisabled,
               ]}
             >
-              <Text style={styles.sendArrow}>↑</Text>
+              <Text style={styles.sendArrow}>
+                ↑
+              </Text>
             </Pressable>
           </View>
 
-          <Text style={styles.alpha}>A2 • PRIVATE ALPHA</Text>
+          <Text style={styles.alpha}>
+            A2 • PRIVATE ALPHA
+          </Text>
         </View>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
+// ============================================================
+// STYLES
+// ============================================================
+
 const styles = StyleSheet.create({
+  authLoadingScreen: {
+    flex: 1,
+    backgroundColor: '#F3F1EC',
+  },
+
   screen: {
     flex: 1,
     backgroundColor: '#F3F1EC',
@@ -430,7 +669,8 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 10000,
     borderWidth: 1,
-    borderColor: 'rgba(38, 36, 32, 0.035)',
+    borderColor:
+      'rgba(38, 36, 32, 0.035)',
   },
 
   longitude: {
@@ -439,7 +679,8 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 10000,
     borderWidth: 1,
-    borderColor: 'rgba(38, 36, 32, 0.034)',
+    borderColor:
+      'rgba(38, 36, 32, 0.034)',
   },
 
   latitude: {
@@ -447,7 +688,8 @@ const styles = StyleSheet.create({
     left: '6%',
     right: '6%',
     height: 1,
-    backgroundColor: 'rgba(38, 36, 32, 0.028)',
+    backgroundColor:
+      'rgba(38, 36, 32, 0.028)',
   },
 
   center: {
@@ -481,7 +723,8 @@ const styles = StyleSheet.create({
     width: '68%',
     height: '68%',
     borderRadius: 1000,
-    backgroundColor: 'rgba(38, 38, 36, 0.72)',
+    backgroundColor:
+      'rgba(38, 38, 36, 0.72)',
   },
 
   blobMedium: {
@@ -489,7 +732,8 @@ const styles = StyleSheet.create({
     width: '58%',
     height: '72%',
     borderRadius: 1000,
-    backgroundColor: 'rgba(76, 76, 72, 0.28)',
+    backgroundColor:
+      'rgba(76, 76, 72, 0.28)',
   },
 
   blobSmall: {
@@ -497,25 +741,29 @@ const styles = StyleSheet.create({
     width: '46%',
     height: '49%',
     borderRadius: 1000,
-    backgroundColor: 'rgba(17, 17, 16, 0.32)',
+    backgroundColor:
+      'rgba(17, 17, 16, 0.32)',
   },
 
   pixel: {
     position: 'absolute',
     width: 8,
     height: 8,
-    backgroundColor: 'rgba(42, 42, 39, 0.42)',
+    backgroundColor:
+      'rgba(42, 42, 39, 0.42)',
   },
 
   pixelTiny: {
     position: 'absolute',
     width: 4,
     height: 4,
-    backgroundColor: 'rgba(42, 42, 39, 0.34)',
+    backgroundColor:
+      'rgba(42, 42, 39, 0.34)',
   },
 
   pixelListening: {
-    backgroundColor: 'rgba(20, 20, 18, 0.7)',
+    backgroundColor:
+      'rgba(20, 20, 18, 0.7)',
   },
 
   pixelOne: {
@@ -548,7 +796,8 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 2.2,
-    color: 'rgba(36, 35, 32, 0.42)',
+    color:
+      'rgba(36, 35, 32, 0.42)',
   },
 
   question: {
@@ -557,6 +806,27 @@ const styles = StyleSheet.create({
     fontWeight: '400',
     letterSpacing: -0.55,
     color: '#25241F',
+  },
+
+  replyShell: {
+    width: '100%',
+    maxWidth: 600,
+    maxHeight: 230,
+    marginTop: 25,
+  },
+
+  replyContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+
+  replyText: {
+    color: '#25241F',
+    fontSize: 17,
+    lineHeight: 25,
+    fontWeight: '400',
+    letterSpacing: -0.25,
+    textAlign: 'center',
   },
 
   lastPrompt: {
@@ -585,8 +855,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: 'rgba(35, 33, 29, 0.09)',
-    backgroundColor: 'rgba(255, 255, 255, 0.42)',
+    borderColor:
+      'rgba(35, 33, 29, 0.09)',
+    backgroundColor:
+      'rgba(255, 255, 255, 0.42)',
     paddingLeft: 20,
     paddingRight: 8,
   },
@@ -620,7 +892,8 @@ const styles = StyleSheet.create({
 
   alpha: {
     marginTop: 12,
-    color: 'rgba(40, 38, 34, 0.27)',
+    color:
+      'rgba(40, 38, 34, 0.27)',
     fontSize: 8,
     letterSpacing: 2,
   },
