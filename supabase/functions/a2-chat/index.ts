@@ -1,17 +1,32 @@
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
+
+import { withSupabase } from 'npm:@supabase/server@1';
+
+// ------------------------------------------------------------
+// SETTINGS
+// ------------------------------------------------------------
+
+// If the most recent conversation is older than this,
+// silently begin a new underlying conversation.
+const CONVERSATION_GAP_HOURS = 12;
+
+// Number of recent messages sent back to OpenAI for context.
+const CONTEXT_MESSAGE_LIMIT = 12;
+
+// ------------------------------------------------------------
+// READ TEXT FROM OPENAI RESPONSE
+// ------------------------------------------------------------
 
 function getOutputText(data: any): string {
-  if (typeof data?.output_text === "string" && data.output_text.trim()) {
+  if (
+    typeof data?.output_text === 'string' &&
+    data.output_text.trim()
+  ) {
     return data.output_text.trim();
   }
 
   if (!Array.isArray(data?.output)) {
-    return "";
+    return '';
   }
 
   const textParts: string[] = [];
@@ -23,94 +38,379 @@ function getOutputText(data: any): string {
 
     for (const content of item.content) {
       if (
-        content?.type === "output_text" &&
-        typeof content?.text === "string"
+        content?.type === 'output_text' &&
+        typeof content?.text === 'string'
       ) {
         textParts.push(content.text);
       }
     }
   }
 
-  return textParts.join("\n").trim();
+  return textParts.join('\n').trim();
 }
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", {
-      headers: corsHeaders,
-    });
+// ------------------------------------------------------------
+// CREATE A SIMPLE HIDDEN CONVERSATION TITLE
+// ------------------------------------------------------------
+
+function createConversationTitle(message: string): string {
+  const cleanMessage = message
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (cleanMessage.length <= 60) {
+    return cleanMessage;
   }
 
-  if (req.method !== "POST") {
-    return new Response(
-      JSON.stringify({
-        error: "Method not allowed",
-      }),
-      {
-        status: 405,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      },
-    );
-  }
+  return `${cleanMessage.slice(0, 57)}...`;
+}
 
-  try {
-    const body = await req.json();
-    const message = body?.message;
+// ------------------------------------------------------------
+// A2 EDGE FUNCTION
+// ------------------------------------------------------------
 
-    if (typeof message !== "string" || !message.trim()) {
-      return new Response(
-        JSON.stringify({
-          error: "A message is required.",
-        }),
-        {
-          status: 400,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
+export default {
+  fetch: withSupabase(
+    {
+      auth: 'user',
+    },
+
+    async (req, ctx) => {
+      // --------------------------------------------------------
+      // ONLY ALLOW POST
+      // --------------------------------------------------------
+
+      if (req.method !== 'POST') {
+        return Response.json(
+          {
+            error: 'Method not allowed.',
           },
-        },
-      );
-    }
+          {
+            status: 405,
+          }
+        );
+      }
 
-    const openAIKey = Deno.env.get("OPENAI_API_KEY");
+      try {
+        // ------------------------------------------------------
+        // AUTHENTICATED USER
+        // ------------------------------------------------------
 
-    if (!openAIKey) {
-      console.error("OPENAI_API_KEY is missing.");
+        const userId = ctx.userClaims?.id;
 
-      return new Response(
-        JSON.stringify({
-          error: "A2 server configuration error.",
-        }),
-        {
-          status: 500,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
-          },
-        },
-      );
-    }
+        if (!userId) {
+          return Response.json(
+            {
+              error: 'Authenticated user not found.',
+            },
+            {
+              status: 401,
+            }
+          );
+        }
 
-    const openAIResponse = await fetch(
-      "https://api.openai.com/v1/responses",
-      {
-        method: "POST",
+        // This Supabase client is scoped to the signed-in user.
+        // Your RLS policies remain active.
+        const supabase = ctx.supabase;
 
-        headers: {
-          Authorization: `Bearer ${openAIKey}`,
-          "Content-Type": "application/json",
-        },
+        // ------------------------------------------------------
+        // REQUEST BODY
+        // ------------------------------------------------------
 
-        body: JSON.stringify({
-          model: "gpt-5.6-luna",
+        const body = await req.json();
 
-          store: false,
-          
-          instructions: `
-You are A2, Tony's personal AI assistant.
+        const message = body?.message;
+
+        if (
+          typeof message !== 'string' ||
+          !message.trim()
+        ) {
+          return Response.json(
+            {
+              error: 'A message is required.',
+            },
+            {
+              status: 400,
+            }
+          );
+        }
+
+        const cleanMessage = message.trim();
+        const now = new Date();
+        const nowIso = now.toISOString();
+
+        // ------------------------------------------------------
+        // OPENAI KEY
+        // ------------------------------------------------------
+
+        const openAIKey =
+          Deno.env.get('OPENAI_API_KEY');
+
+        if (!openAIKey) {
+          console.error(
+            'OPENAI_API_KEY is missing.'
+          );
+
+          return Response.json(
+            {
+              error:
+                'A2 server configuration error.',
+            },
+            {
+              status: 500,
+            }
+          );
+        }
+
+        // ------------------------------------------------------
+        // FIND MOST RECENT CONVERSATION
+        // ------------------------------------------------------
+
+        const {
+          data: latestConversation,
+          error: conversationLookupError,
+        } = await supabase
+          .from('conversations')
+          .select(
+            'id, title, created_at, last_message_at'
+          )
+          .order('last_message_at', {
+            ascending: false,
+          })
+          .limit(1)
+          .maybeSingle();
+
+        if (conversationLookupError) {
+          console.error(
+            'Conversation lookup error:',
+            conversationLookupError
+          );
+
+          return Response.json(
+            {
+              error:
+                'A2 could not load conversation history.',
+            },
+            {
+              status: 500,
+            }
+          );
+        }
+
+        // ------------------------------------------------------
+        // DECIDE WHETHER TO REUSE OR CREATE A CONVERSATION
+        // ------------------------------------------------------
+
+        let conversationId: string | null = null;
+
+        if (
+          latestConversation?.id &&
+          latestConversation?.last_message_at
+        ) {
+          const lastMessageTime = new Date(
+            latestConversation.last_message_at
+          ).getTime();
+
+          const gapMilliseconds =
+            now.getTime() - lastMessageTime;
+
+          const maximumGapMilliseconds =
+            CONVERSATION_GAP_HOURS *
+            60 *
+            60 *
+            1000;
+
+          if (
+            gapMilliseconds <=
+            maximumGapMilliseconds
+          ) {
+            conversationId =
+              latestConversation.id;
+          }
+        }
+
+        // ------------------------------------------------------
+        // CREATE NEW HIDDEN CONVERSATION WHEN NEEDED
+        // ------------------------------------------------------
+
+        if (!conversationId) {
+          const {
+            data: newConversation,
+            error: conversationCreateError,
+          } = await supabase
+            .from('conversations')
+            .insert({
+              user_id: userId,
+
+              title:
+                createConversationTitle(
+                  cleanMessage
+                ),
+
+              last_message_at: nowIso,
+            })
+            .select('id')
+            .single();
+
+          if (conversationCreateError) {
+            console.error(
+              'Conversation creation error:',
+              conversationCreateError
+            );
+
+            return Response.json(
+              {
+                error:
+                  'A2 could not create a conversation.',
+              },
+              {
+                status: 500,
+              }
+            );
+          }
+
+          conversationId =
+            newConversation.id;
+        }
+
+        // ------------------------------------------------------
+        // SAVE USER MESSAGE
+        // ------------------------------------------------------
+
+        const {
+          error: userMessageInsertError,
+        } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id:
+              conversationId,
+
+            user_id: userId,
+
+            role: 'user',
+
+            content: cleanMessage,
+          });
+
+        if (userMessageInsertError) {
+          console.error(
+            'User message insert error:',
+            userMessageInsertError
+          );
+
+          return Response.json(
+            {
+              error:
+                'A2 could not save your message.',
+            },
+            {
+              status: 500,
+            }
+          );
+        }
+
+        // ------------------------------------------------------
+        // UPDATE CONVERSATION ACTIVITY
+        // ------------------------------------------------------
+
+        const {
+          error: conversationUpdateError,
+        } = await supabase
+          .from('conversations')
+          .update({
+            last_message_at: nowIso,
+          })
+          .eq('id', conversationId);
+
+        if (conversationUpdateError) {
+          console.error(
+            'Conversation activity update error:',
+            conversationUpdateError
+          );
+        }
+
+        // ------------------------------------------------------
+        // LOAD RECENT CONTEXT
+        // ------------------------------------------------------
+
+        const {
+          data: recentMessages,
+          error: recentMessagesError,
+        } = await supabase
+          .from('messages')
+          .select(
+            'role, content, created_at'
+          )
+          .eq(
+            'conversation_id',
+            conversationId
+          )
+          .in(
+            'role',
+            ['user', 'assistant']
+          )
+          .order('created_at', {
+            ascending: false,
+          })
+          .limit(CONTEXT_MESSAGE_LIMIT);
+
+        if (recentMessagesError) {
+          console.error(
+            'Recent message lookup error:',
+            recentMessagesError
+          );
+
+          return Response.json(
+            {
+              error:
+                'A2 could not load recent context.',
+            },
+            {
+              status: 500,
+            }
+          );
+        }
+
+        // Database query above returns newest first.
+        // OpenAI needs the conversation in chronological order.
+
+        const chronologicalMessages = [
+          ...(recentMessages ?? []),
+        ].reverse();
+
+        const openAIInput =
+          chronologicalMessages.map(
+            (storedMessage) => ({
+              role: storedMessage.role,
+              content:
+                storedMessage.content,
+            })
+          );
+
+        // ------------------------------------------------------
+        // ASK OPENAI
+        // ------------------------------------------------------
+
+        const openAIResponse = await fetch(
+          'https://api.openai.com/v1/responses',
+          {
+            method: 'POST',
+
+            headers: {
+              Authorization:
+                `Bearer ${openAIKey}`,
+
+              'Content-Type':
+                'application/json',
+            },
+
+            body: JSON.stringify({
+              model: 'gpt-5.6-luna',
+
+              store: false,
+
+              instructions: `
+You are A2, a private personal AI assistant.
 
 PERSONALITY
 
@@ -124,11 +424,23 @@ COMMUNICATION
 - Be concise by default.
 - Avoid generic assistant phrases.
 - Avoid excessive enthusiasm.
-- Do not constantly repeat Tony's name.
+- Do not constantly repeat the user's name.
 - Explain reasoning only when it adds value.
 - Prefer one strong recommendation when a decision is needed.
 - Provide meaningful alternatives only when useful.
 - Push back respectfully when an assumption appears wrong or conflicts with stated goals.
+
+CONVERSATION CONTINUITY
+
+Recent conversation messages may be supplied to you.
+
+Use them naturally to understand follow-up questions, references, corrections, and continuing topics.
+
+Do not announce that you loaded conversation history.
+
+Do not repeatedly summarize earlier messages unless doing so is useful.
+
+If the user's newest message refers to something discussed moments ago, use the supplied conversation context to understand the reference.
 
 CENTRAL A2 SCREEN
 
@@ -156,88 +468,158 @@ CAPABILITIES
 
 You are currently in an early private alpha.
 
-Memory, projects, calendar, email, files, finances, tools, and other personal systems are still being built.
+You now have short-term conversation continuity through stored conversation history.
 
-Do not pretend those capabilities already exist.
-          `.trim(),
+Durable personal memory, projects, calendar, email, files, finances, advanced tools, and other personal systems are still being built.
 
-          input: message.trim(),
+Do not pretend capabilities exist before they have actually been implemented.
+              `.trim(),
 
-          max_output_tokens: 250,
-        }),
-      },
-    );
+              input: openAIInput,
 
-    const data = await openAIResponse.json();
+              max_output_tokens: 250,
+            }),
+          }
+        );
 
-    if (!openAIResponse.ok) {
-      console.error(
-        "OpenAI API error:",
-        JSON.stringify(data),
-      );
+        const data =
+          await openAIResponse.json();
 
-      return new Response(
-        JSON.stringify({
-          error: "A2 could not complete the request.",
-        }),
-        {
-          status: 502,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
+        // ------------------------------------------------------
+        // HANDLE OPENAI ERROR
+        // ------------------------------------------------------
+
+        if (!openAIResponse.ok) {
+          console.error(
+            'OpenAI API error:',
+            JSON.stringify(data)
+          );
+
+          return Response.json(
+            {
+              error:
+                'A2 could not complete the request.',
+            },
+            {
+              status: 502,
+            }
+          );
+        }
+
+        // ------------------------------------------------------
+        // EXTRACT ASSISTANT TEXT
+        // ------------------------------------------------------
+
+        const reply =
+          getOutputText(data);
+
+        if (!reply) {
+          console.error(
+            'OpenAI returned no readable text:',
+            JSON.stringify(data)
+          );
+
+          return Response.json(
+            {
+              error:
+                'A2 received an empty response.',
+            },
+            {
+              status: 502,
+            }
+          );
+        }
+
+        // ------------------------------------------------------
+        // SAVE ASSISTANT MESSAGE
+        // ------------------------------------------------------
+
+        const {
+          error: assistantMessageInsertError,
+        } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id:
+              conversationId,
+
+            user_id: userId,
+
+            role: 'assistant',
+
+            content: reply,
+          });
+
+        if (assistantMessageInsertError) {
+          console.error(
+            'Assistant message insert error:',
+            assistantMessageInsertError
+          );
+
+          // We still return the answer because OpenAI
+          // successfully completed the request.
+        }
+
+        // ------------------------------------------------------
+        // UPDATE CONVERSATION LAST ACTIVITY
+        // ------------------------------------------------------
+
+        const completedAt =
+          new Date().toISOString();
+
+        const {
+          error:
+            finalConversationUpdateError,
+        } = await supabase
+          .from('conversations')
+          .update({
+            last_message_at:
+              completedAt,
+          })
+          .eq(
+            'id',
+            conversationId
+          );
+
+        if (
+          finalConversationUpdateError
+        ) {
+          console.error(
+            'Final conversation update error:',
+            finalConversationUpdateError
+          );
+        }
+
+        // ------------------------------------------------------
+        // RETURN A2 RESPONSE
+        // ------------------------------------------------------
+
+        return Response.json(
+          {
+            reply,
+
+            conversation_id:
+              conversationId,
           },
-        },
-      );
-    }
+          {
+            status: 200,
+          }
+        );
+      } catch (error) {
+        console.error(
+          'A2 function error:',
+          error
+        );
 
-    const reply = getOutputText(data);
-
-    if (!reply) {
-      console.error(
-        "OpenAI returned no readable text:",
-        JSON.stringify(data),
-      );
-
-      return new Response(
-        JSON.stringify({
-          error: "A2 received an empty response.",
-        }),
-        {
-          status: 502,
-          headers: {
-            ...corsHeaders,
-            "Content-Type": "application/json",
+        return Response.json(
+          {
+            error:
+              'Unexpected A2 server error.',
           },
-        },
-      );
+          {
+            status: 500,
+          }
+        );
+      }
     }
-
-    return new Response(
-      JSON.stringify({
-        reply,
-      }),
-      {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      },
-    );
-  } catch (error) {
-    console.error("A2 function error:", error);
-
-    return new Response(
-      JSON.stringify({
-        error: "Unexpected A2 server error.",
-      }),
-      {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      },
-    );
-  }
-});
+  ),
+};
