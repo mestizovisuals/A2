@@ -1,4 +1,5 @@
 import type { Session } from '@supabase/supabase-js';
+import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -20,6 +21,7 @@ import AuthScreen from '../components/AuthScreen';
 import { supabase } from '../lib/supabase';
 
 export default function HomeScreen() {
+  const router = useRouter();
   const { width, height } = useWindowDimensions();
 
   // ------------------------------------------------------------
@@ -383,8 +385,15 @@ export default function HomeScreen() {
         {/* ---------------------------------------------------- */}
 
         <View style={styles.header}>
-          <Text style={styles.brand}>A2</Text>
-        </View>
+  <Pressable
+    onPress={() => router.push('/memory')}
+    style={styles.brandButton}
+    accessibilityRole="button"
+    accessibilityLabel="Open A2 Memory and Identity"
+  >
+    <Text style={styles.brand}>A2</Text>
+  </Pressable>
+</View>
 
         {/* ---------------------------------------------------- */}
         {/* CENTER EXPERIENCE                                   */}
@@ -635,18 +644,25 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  header: {
-    height: 80,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+header: {
+  height: 80,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
 
-  brand: {
-    fontSize: 15,
-    fontWeight: '600',
-    letterSpacing: 5,
-    color: '#22211E',
-  },
+brandButton: {
+  minWidth: 60,
+  minHeight: 44,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+
+brand: {
+  fontSize: 15,
+  fontWeight: '600',
+  letterSpacing: 5,
+  color: '#22211E',
+},
 
   globeGrid: {
     position: 'absolute',
