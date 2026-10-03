@@ -20,6 +20,10 @@ import {
 import AuthScreen from '../components/AuthScreen';
 import { supabase } from '../lib/supabase';
 
+import {
+  useA2Voice,
+} from '../hooks/useA2Voice';
+
 export default function HomeScreen() {
   const router = useRouter();
   const { width, height } = useWindowDimensions();
@@ -37,7 +41,6 @@ export default function HomeScreen() {
 
   const [draft, setDraft] = useState('');
   const [lastPrompt, setLastPrompt] = useState('');
-  const [listening, setListening] = useState(false);
   const [reply, setReply] = useState('');
   const [thinking, setThinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -207,8 +210,13 @@ export default function HomeScreen() {
   // SEND AUTHENTICATED MESSAGE TO A2 BACKEND
   // ------------------------------------------------------------
 
-  async function submitPrompt() {
-    const message = draft.trim();
+  async function submitPrompt(
+    explicitMessage?: string
+  ) {
+    const message = (
+      explicitMessage ??
+      draft
+    ).trim();
 
     if (!message || thinking) {
       return;
@@ -221,12 +229,26 @@ export default function HomeScreen() {
     setThinking(true);
 
     try {
+      const clientNow =
+        new Date().toString();
+
+      const clientTimezone =
+        Intl.DateTimeFormat()
+          .resolvedOptions()
+          .timeZone || 'UTC';
+
       const { data, error } =
-        await supabase.functions.invoke('a2-chat', {
-          body: {
-            message,
-          },
-        });
+        await supabase.functions.invoke(
+          'a2-chat',
+          {
+            body: {
+              message,
+              client_now: clientNow,
+              client_timezone:
+                clientTimezone,
+            },
+          }
+        );
 
       if (error) {
         console.error(
@@ -247,7 +269,10 @@ export default function HomeScreen() {
 
       setReply(data.reply);
     } catch (error) {
-      console.error('A2 request error:', error);
+      console.error(
+        'A2 request error:',
+        error
+      );
 
       setErrorMessage(
         error instanceof Error
@@ -259,6 +284,34 @@ export default function HomeScreen() {
     }
   }
 
+  // ------------------------------------------------------------
+  // VOICE INPUT
+  // ------------------------------------------------------------
+
+  const {
+    recording: listening,
+    transcribing:
+      voiceTranscribing,
+    toggleRecording,
+  } = useA2Voice({
+    onTranscript:
+      async (text) => {
+        setErrorMessage('');
+
+        setDraft(text);
+
+        await submitPrompt(
+          text
+        );
+      },
+
+    onError:
+      (message) => {
+        setErrorMessage(
+          message
+        );
+      },
+  });
   // ------------------------------------------------------------
   // AUTH LOADING SCREEN
   // ------------------------------------------------------------
@@ -404,12 +457,18 @@ export default function HomeScreen() {
             {greeting}, Tony.
           </Text>
 
-          <Pressable
-            onPress={() =>
-              setListening((current) => !current)
-            }
-            style={styles.orbButton}
-          >
+<Pressable
+  onPress={
+    toggleRecording
+  }
+  disabled={
+    thinking ||
+    voiceTranscribing
+  }
+  style={
+    styles.orbButton
+  }
+>
             <View
               style={[
                 styles.orbFrame,
@@ -533,11 +592,13 @@ export default function HomeScreen() {
           {/* -------------------------------------------------- */}
 
           <Text style={styles.mode}>
-            {thinking
-              ? 'Thinking…'
-              : listening
-                ? 'Listening…'
-                : 'Tap to speak'}
+{thinking
+  ? 'Thinking…'
+  : voiceTranscribing
+    ? 'Processing voice…'
+    : listening
+      ? 'Listening… tap to send'
+      : 'Tap to speak'}
           </Text>
 
           {/* -------------------------------------------------- */}
@@ -588,7 +649,9 @@ export default function HomeScreen() {
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              onSubmitEditing={submitPrompt}
+onSubmitEditing={() =>
+  submitPrompt()
+}
               placeholder="Ask A2..."
               placeholderTextColor="rgba(28, 27, 24, 0.36)"
               style={styles.input}
@@ -597,7 +660,9 @@ export default function HomeScreen() {
             />
 
             <Pressable
-              onPress={submitPrompt}
+onPress={() =>
+  submitPrompt()
+}
               disabled={
                 !draft.trim() || thinking
               }

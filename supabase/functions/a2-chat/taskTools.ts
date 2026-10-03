@@ -138,6 +138,7 @@ export async function processTaskIntent({
   message,
   clientNow,
   clientTimezone,
+  recentConversation,
 }: {
   openAIKey: string;
   supabase: any;
@@ -145,6 +146,7 @@ export async function processTaskIntent({
   message: string;
   clientNow: string;
   clientTimezone: string;
+  recentConversation: string;
 }): Promise<TaskToolResult> {
   try {
     // --------------------------------------------------------
@@ -269,7 +271,11 @@ TIME RULES
 
 The user's current local date/time and timezone are supplied below.
 
+Interpret relative dates such as today, tomorrow, tonight, this afternoon, and next week using that local time and timezone.
+
 Convert explicit dates/times into ISO 8601.
+
+When due_at is not null, it must contain an explicit UTC offset or Z. Do not return an ambiguous timezone-free timestamp.
 
 Examples:
 "tomorrow afternoon" can reasonably mean 15:00 local time.
@@ -317,6 +323,10 @@ ${clientNow}
 TIMEZONE
 
 ${clientTimezone}
+
+RECENT CONVERSATION
+
+${recentConversation || 'No recent conversation available.'}
 
 EXISTING TASKS
 

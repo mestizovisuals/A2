@@ -2,6 +2,12 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 
 import { withSupabase } from 'npm:@supabase/server@^1';
 
+import {
+  processTaskIntent,
+  type TaskToolResult,
+} from './taskTools.ts';
+
+
 // ============================================================
 // A2 SETTINGS
 // ============================================================
@@ -204,6 +210,52 @@ function limitText(
   return clean.slice(
     0,
     maximumLength
+  );
+}
+
+// ============================================================
+// TASK INTENT DETECTION
+// ============================================================
+
+function looksLikeTaskRequest(
+  message: string
+): boolean {
+  const normalized =
+    message.toLowerCase();
+
+  const patterns = [
+    /\bremind\b/,
+    /\breminder\b/,
+    /\btask\b/,
+    /\btasks\b/,
+    /\btodo\b/,
+    /\bto-do\b/,
+    /\bdue\b/,
+    /\bdeadline\b/,
+    /\bpriority\b/,
+    /\bcomplete\b/,
+    /\bcompleted\b/,
+    /\bfinished\b/,
+    /\bfinish\b/,
+    /\breopen\b/,
+    /\bdelete\b/,
+    /\bremove\b/,
+    /\bcancel\b/,
+    /\btomorrow\b/,
+    /\btonight\b/,
+    /\bthis afternoon\b/,
+    /\bthis evening\b/,
+    /\bthis morning\b/,
+    /\bwhat do i have today\b/,
+    /\bwhat do i need to do\b/,
+    /\bwhat's on my list\b/,
+    /\bwhat is on my list\b/,
+    /\badd .* to my list\b/,
+  ];
+
+  return patterns.some(
+    (pattern) =>
+      pattern.test(normalized)
   );
 }
 
@@ -1614,10 +1666,22 @@ export default {
         // ----------------------------------------------------
 
         const body =
-          await req.json();
+  await req.json();
 
-        const message =
-          body?.message;
+const message =
+  body?.message;
+
+const clientNow =
+  typeof body?.client_now ===
+    'string'
+    ? body.client_now
+    : new Date().toString();
+
+const clientTimezone =
+  typeof body?.client_timezone ===
+    'string'
+    ? body.client_timezone
+    : 'UTC';
 
         if (
           typeof message !==
@@ -2037,15 +2101,149 @@ export default {
         }
 
         const chronologicalMessages =
-          [
-            ...(
-              recentMessages ??
-              []
-            ),
-          ].reverse();
+  [
+    ...(
+      recentMessages ??
+      []
+    ),
+  ].reverse();
 
-        const openAIInput =
-          chronologicalMessages.map(
+// ----------------------------------------------------
+// TODAY / TASK TOOL
+// ----------------------------------------------------
+
+const recentConversationText =
+  chronologicalMessages
+    .slice(-6)
+    .map(
+      (storedMessage) =>
+        `${storedMessage.role.toUpperCase()}: ${storedMessage.content}`
+    )
+    .join('\n\n');
+
+const recentContextLooksTaskRelated =
+  chronologicalMessages
+    .slice(-4)
+    .some(
+      (storedMessage) =>
+        looksLikeTaskRequest(
+          storedMessage.content
+        )
+    );
+
+let taskToolResult:
+  TaskToolResult = {
+    handled: false,
+
+    needsClarification:
+      false,
+
+    clarificationQuestion:
+      null,
+
+    context:
+      'No Today task action was requested.',
+  };
+
+if (
+  looksLikeTaskRequest(
+    cleanMessage
+  ) ||
+  recentContextLooksTaskRelated
+) {
+  taskToolResult =
+    await processTaskIntent({
+      openAIKey,
+
+      supabase,
+
+      userId,
+
+      message:
+        cleanMessage,
+
+      clientNow,
+
+      clientTimezone,
+
+      recentConversation:
+        recentConversationText,
+    });
+}
+
+// ----------------------------------------------------
+// TASK CLARIFICATION
+// ----------------------------------------------------
+
+if (
+  taskToolResult
+    .needsClarification
+) {
+  const clarificationReply =
+    taskToolResult
+      .clarificationQuestion ||
+    'What details should I use for that task?';
+
+  const {
+    error:
+      clarificationSaveError,
+  } = await supabase
+    .from('messages')
+    .insert({
+      conversation_id:
+        conversationId,
+
+      user_id:
+        userId,
+
+      role:
+        'assistant',
+
+      content:
+        clarificationReply,
+    });
+
+  if (
+    clarificationSaveError
+  ) {
+    console.error(
+      'Task clarification save error:',
+      clarificationSaveError
+    );
+  }
+
+  await supabase
+    .from('conversations')
+    .update({
+      last_message_at:
+        new Date()
+          .toISOString(),
+    })
+    .eq(
+      'id',
+      conversationId
+    );
+
+  return Response.json(
+    {
+      reply:
+        clarificationReply,
+
+      conversation_id:
+        conversationId,
+
+      task_action:
+        true,
+    },
+
+    {
+      status: 200,
+    }
+  );
+}
+
+const openAIInput =
+  chronologicalMessages.map(
             (
               storedMessage
             ) => ({
@@ -2140,6 +2338,24 @@ Do not mention these numbers unless explicitly asked.
 
 Familiarity should affect efficiency and natural shorthand, not create fake emotional intimacy.
 
+TODAY TASK SYSTEM
+
+A2 has a persistent Today task system.
+
+Result from the task-action layer for the user's latest request:
+
+${taskToolResult.context}
+
+TASK BEHAVIOR
+
+If the task-action layer says a task was created, changed, started, completed, reopened, or deleted, accurately and concisely confirm that action.
+
+If it provides a task list, answer using that actual task data.
+
+Never claim you changed a task unless the task-action result confirms that the database action succeeded.
+
+Do not tell the user to manually open Today when you have already successfully performed the requested task action.
+
 DURABLE MEMORY
 
 These are durable memories associated with this authenticated user:
@@ -2212,8 +2428,10 @@ You currently have:
 - persistent conversation history
 - durable memory
 - an evolving per-user working relationship profile
+- a persistent Today task system
+- the ability to create, update, start, complete, reopen, delete, and review Today tasks
 
-Projects, calendar, email, files, finances, advanced tools, proactive notifications, and full voice interaction are still being developed.
+Projects, external calendar integration, email, files, finances, proactive notifications, and full voice interaction are still being developed.
 
 Never pretend unavailable capabilities already exist.
                   `.trim(),
@@ -2417,18 +2635,21 @@ Never pretend unavailable capabilities already exist.
         // ----------------------------------------------------
 
         return Response.json(
-          {
-            reply,
+  {
+    reply,
 
-            conversation_id:
-              conversationId,
-          },
+    conversation_id:
+      conversationId,
 
-          {
-            status:
-              200,
-          }
-        );
+    task_action:
+      taskToolResult.handled,
+  },
+
+  {
+    status:
+      200,
+  }
+);
       } catch (error) {
         console.error(
           'A2 function error:',
