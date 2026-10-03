@@ -1,14 +1,14 @@
 import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
 import {
-    ActivityIndicator,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 
 import { supabase } from '../lib/supabase';
@@ -40,7 +40,7 @@ export default function AuthScreen() {
         email: cleanEmail,
 
         options: {
-          shouldCreateUser: true,
+          shouldCreateUser: false,
         },
       });
 

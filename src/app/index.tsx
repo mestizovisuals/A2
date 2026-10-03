@@ -152,7 +152,10 @@ export default function HomeScreen() {
   // RESPONSIVE SIZE CALCULATIONS
   // ------------------------------------------------------------
 
-  const orbSize = Math.min(Math.max(width * 0.38, 165), 300);
+  const orbSize = Math.min(
+    Math.max(width * 0.38, 165),
+    300
+  );
 
   const gridSize = Math.min(
     Math.max(width * 1.05, 600),
@@ -199,23 +202,13 @@ export default function HomeScreen() {
   });
 
   // ------------------------------------------------------------
-  // SEND MESSAGE TO CURRENT A2 BACKEND
+  // SEND AUTHENTICATED MESSAGE TO A2 BACKEND
   // ------------------------------------------------------------
 
   async function submitPrompt() {
     const message = draft.trim();
 
     if (!message || thinking) {
-      return;
-    }
-
-    const apiUrl =
-      process.env.EXPO_PUBLIC_A2_API_URL;
-
-    if (!apiUrl) {
-      setErrorMessage(
-        'A2 API URL is not configured.'
-      );
       return;
     }
 
@@ -226,24 +219,21 @@ export default function HomeScreen() {
     setThinking(true);
 
     try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
+      const { data, error } =
+        await supabase.functions.invoke('a2-chat', {
+          body: {
+            message,
+          },
+        });
 
-        headers: {
-          'Content-Type': 'application/json',
-        },
+      if (error) {
+        console.error(
+          'A2 function invocation error:',
+          error
+        );
 
-        body: JSON.stringify({
-          message,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
         throw new Error(
-          data?.error ||
-            'A2 could not complete the request.'
+          'A2 could not complete the request.'
         );
       }
 
@@ -255,7 +245,7 @@ export default function HomeScreen() {
 
       setReply(data.reply);
     } catch (error) {
-      console.error(error);
+      console.error('A2 request error:', error);
 
       setErrorMessage(
         error instanceof Error
@@ -296,7 +286,7 @@ export default function HomeScreen() {
       <StatusBar style="dark" />
 
       {/* ------------------------------------------------------ */}
-      {/* FAINT LATITUDE / LONGITUDE BACKGROUND                  */}
+      {/* FAINT LATITUDE / LONGITUDE BACKGROUND                 */}
       {/* ------------------------------------------------------ */}
 
       <View
@@ -397,7 +387,7 @@ export default function HomeScreen() {
         </View>
 
         {/* ---------------------------------------------------- */}
-        {/* CENTER EXPERIENCE                                    */}
+        {/* CENTER EXPERIENCE                                   */}
         {/* ---------------------------------------------------- */}
 
         <View style={styles.center}>
@@ -530,7 +520,7 @@ export default function HomeScreen() {
           </Pressable>
 
           {/* -------------------------------------------------- */}
-          {/* A2 STATE                                           */}
+          {/* A2 STATE                                          */}
           {/* -------------------------------------------------- */}
 
           <Text style={styles.mode}>
@@ -542,7 +532,7 @@ export default function HomeScreen() {
           </Text>
 
           {/* -------------------------------------------------- */}
-          {/* RESPONSE AREA                                      */}
+          {/* RESPONSE AREA                                     */}
           {/* -------------------------------------------------- */}
 
           {thinking ? (
