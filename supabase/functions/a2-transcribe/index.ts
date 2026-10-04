@@ -2,8 +2,22 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 
 import { withSupabase } from 'npm:@supabase/server@^1';
 
-const MAX_AUDIO_BYTES =
-  20 * 1024 * 1024;
+const CONVERSATION_GAP_HOURS = 12;
+
+function createConversationTitle(
+  message: string
+): string {
+  const clean =
+    message
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  if (clean.length <= 60) {
+    return clean;
+  }
+
+  return `${clean.slice(0, 57)}...`;
+}
 
 export default {
   fetch: withSupabase(
@@ -40,20 +54,90 @@ export default {
           );
         }
 
-        const openAIKey =
-          Deno.env.get(
-            'OPENAI_API_KEY'
-          );
+        const supabase =
+          ctx.supabase;
 
-        if (!openAIKey) {
+        const body =
+          await req.json();
+
+        const userText =
+          typeof body?.user_text ===
+            'string'
+            ? body.user_text.trim()
+            : '';
+
+        const assistantText =
+          typeof body
+            ?.assistant_text ===
+            'string'
+            ? body.assistant_text.trim()
+            : '';
+
+        if (
+          !userText ||
+          !assistantText
+        ) {
+          return Response.json(
+            {
+              error:
+                'Both user and assistant transcripts are required.',
+            },
+            {
+              status: 400,
+            }
+          );
+        }
+
+        const now =
+          new Date();
+
+        const nowIso =
+          now.toISOString();
+
+        // ----------------------------------------------------
+        // FIND MOST RECENT CONVERSATION
+        // ----------------------------------------------------
+
+        const {
+          data:
+            latestConversation,
+
+          error:
+            conversationLookupError,
+        } = await supabase
+          .from(
+            'conversations'
+          )
+          .select(`
+            id,
+            last_message_at
+          `)
+          .eq(
+            'user_id',
+            userId
+          )
+          .order(
+            'last_message_at',
+            {
+              ascending:
+                false,
+            }
+          )
+          .limit(1)
+          .maybeSingle();
+
+        if (
+          conversationLookupError
+        ) {
           console.error(
-            'OPENAI_API_KEY is missing.'
+            'A2 live sync conversation lookup error:',
+            conversationLookupError
           );
 
           return Response.json(
             {
               error:
-                'A2 transcription is not configured.',
+                'Could not load conversation history.',
             },
             {
               status: 500,
@@ -61,149 +145,192 @@ export default {
           );
         }
 
-        const incomingForm =
-          await req.formData();
+        // ----------------------------------------------------
+        // REUSE OR CREATE CONVERSATION
+        // ----------------------------------------------------
 
-        const audio =
-          incomingForm.get(
-            'audio'
-          );
-
-        if (
-          !(audio instanceof File)
-        ) {
-          return Response.json(
-            {
-              error:
-                'Audio file is required.',
-            },
-            {
-              status: 400,
-            }
-          );
-        }
-
-        if (audio.size === 0) {
-          return Response.json(
-            {
-              error:
-                'The audio recording was empty.',
-            },
-            {
-              status: 400,
-            }
-          );
-        }
+        let conversationId:
+          | string
+          | null = null;
 
         if (
-          audio.size >
-          MAX_AUDIO_BYTES
+          latestConversation?.id &&
+          latestConversation
+            ?.last_message_at
         ) {
-          return Response.json(
-            {
-              error:
-                'The recording is too large.',
-            },
-            {
-              status: 413,
-            }
-          );
-        }
+          const previousTime =
+            new Date(
+              latestConversation
+                .last_message_at
+            ).getTime();
 
-        const openAIForm =
-          new FormData();
+          const gap =
+            now.getTime() -
+            previousTime;
 
-        openAIForm.append(
-          'model',
-          'gpt-transcribe'
-        );
+          const maximumGap =
+            CONVERSATION_GAP_HOURS *
+            60 *
+            60 *
+            1000;
 
-        openAIForm.append(
-          'file',
-          audio,
-          audio.name ||
-            'a2-voice.webm'
-        );
-
-        openAIForm.append(
-          'prompt',
-          'Accurately transcribe this message to the personal assistant A2. A2 is pronounced A-two. Preserve names, dates, times, numbers, and task instructions carefully.'
-        );
-
-        const response =
-          await fetch(
-            'https://api.openai.com/v1/audio/transcriptions',
-            {
-              method: 'POST',
-
-              headers: {
-                Authorization:
-                  `Bearer ${openAIKey}`,
-              },
-
-              body:
-                openAIForm,
-            }
-          );
-
-        const data =
-          await response.json();
-
-        if (!response.ok) {
-          console.error(
-            'A2 transcription OpenAI error:',
-            JSON.stringify(
-              data
-            )
-          );
-
-          return Response.json(
-            {
-              error:
-                'A2 could not transcribe the recording.',
-            },
-            {
-              status: 502,
-            }
-          );
-        }
-
-        const text =
-          typeof data?.text ===
-            'string'
-            ? data.text.trim()
-            : '';
-
-        if (!text) {
-          return Response.json(
-            {
-              error:
-                'A2 could not hear anything clearly.',
-            },
-            {
-              status: 422,
-            }
-          );
-        }
-
-        return Response.json(
-          {
-            text,
-          },
-          {
-            status: 200,
+          if (
+            gap <=
+            maximumGap
+          ) {
+            conversationId =
+              latestConversation.id;
           }
-        );
+        }
+
+        if (!conversationId) {
+          const {
+            data:
+              newConversation,
+
+            error:
+              conversationCreateError,
+          } = await supabase
+            .from(
+              'conversations'
+            )
+            .insert({
+              user_id:
+                userId,
+
+              title:
+                createConversationTitle(
+                  userText
+                ),
+
+              last_message_at:
+                nowIso,
+            })
+            .select(
+              'id'
+            )
+            .single();
+
+          if (
+            conversationCreateError
+          ) {
+            console.error(
+              'A2 live sync conversation create error:',
+              conversationCreateError
+            );
+
+            return Response.json(
+              {
+                error:
+                  'Could not create conversation.',
+              },
+              {
+                status:
+                  500,
+              }
+            );
+          }
+
+          conversationId =
+            newConversation.id;
+        }
+
+        // ----------------------------------------------------
+        // SAVE USER + A2 TURN
+        // ----------------------------------------------------
+
+        const {
+          error:
+            messageInsertError,
+        } = await supabase
+          .from(
+            'messages'
+          )
+          .insert([
+            {
+              conversation_id:
+                conversationId,
+
+              user_id:
+                userId,
+
+              role:
+                'user',
+
+              content:
+                userText,
+            },
+
+            {
+              conversation_id:
+                conversationId,
+
+              user_id:
+                userId,
+
+              role:
+                'assistant',
+
+              content:
+                assistantText,
+            },
+          ]);
+
+        if (
+          messageInsertError
+        ) {
+          console.error(
+            'A2 live sync message insert error:',
+            messageInsertError
+          );
+
+          return Response.json(
+            {
+              error:
+                'Could not save live conversation.',
+            },
+            {
+              status:
+                500,
+            }
+          );
+        }
+
+        await supabase
+          .from(
+            'conversations'
+          )
+          .update({
+            last_message_at:
+              new Date()
+                .toISOString(),
+          })
+          .eq(
+            'id',
+            conversationId
+          )
+          .eq(
+            'user_id',
+            userId
+          );
+
+        return Response.json({
+          success:
+            true,
+
+          conversation_id:
+            conversationId,
+        });
       } catch (error) {
         console.error(
-          'A2 transcription function error:',
+          'A2 live sync error:',
           error
         );
 
         return Response.json(
           {
             error:
-              'Unexpected A2 transcription error.',
+              'Unexpected live sync error.',
           },
           {
             status: 500,

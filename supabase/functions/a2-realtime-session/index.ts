@@ -382,6 +382,432 @@ required: [
       ],
     },
   },
+  {
+  type:
+    'function',
+
+  name:
+    'list_projects',
+
+  description:
+    'List the user’s current persistent A2 Projects. Use when the user asks what projects they are working on or wants an overview of Projects.',
+
+  parameters: {
+    type:
+      'object',
+
+    properties: {},
+
+    additionalProperties:
+      false,
+  },
+},
+
+{
+  type:
+    'function',
+
+  name:
+    'get_project',
+
+  description:
+    'Retrieve one persistent A2 Project and its linked tasks. Use when the user asks about a project objective, next step, status, priority, or tasks.',
+
+  parameters: {
+    type:
+      'object',
+
+    properties: {
+      project_id: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      project_name: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+    },
+
+    required: [
+      'project_id',
+      'project_name',
+    ],
+
+    additionalProperties:
+      false,
+  },
+},
+
+{
+  type:
+    'function',
+
+  name:
+    'create_project',
+
+  description:
+    'Create a new persistent A2 Project only when the user clearly asks to create one.',
+
+  parameters: {
+    type:
+      'object',
+
+    properties: {
+      name: {
+        type:
+          'string',
+      },
+
+      summary: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      objective: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      next_step: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      status: {
+        anyOf: [
+          {
+            type:
+              'string',
+
+            enum: [
+              'active',
+              'on_hold',
+              'completed',
+              'archived',
+            ],
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      priority: {
+        anyOf: [
+          {
+            type:
+              'integer',
+
+            minimum:
+              1,
+
+            maximum:
+              5,
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+    },
+
+    required: [
+      'name',
+      'summary',
+      'objective',
+      'next_step',
+      'status',
+      'priority',
+    ],
+
+    additionalProperties:
+      false,
+  },
+},
+
+{
+  type:
+    'function',
+
+  name:
+    'update_project',
+
+  description:
+    'Update an existing persistent A2 Project. Use for changing its summary, objective, next step, priority, or status such as active, on hold, completed, or archived.',
+
+  parameters: {
+    type:
+      'object',
+
+    properties: {
+      project_id: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      project_name: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      summary: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      objective: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      next_step: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      status: {
+        anyOf: [
+          {
+            type:
+              'string',
+
+            enum: [
+              'active',
+              'on_hold',
+              'completed',
+              'archived',
+            ],
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      priority: {
+        anyOf: [
+          {
+            type:
+              'integer',
+
+            minimum:
+              1,
+
+            maximum:
+              5,
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+    },
+
+    required: [
+      'project_id',
+      'project_name',
+      'summary',
+      'objective',
+      'next_step',
+      'status',
+      'priority',
+    ],
+
+    additionalProperties:
+      false,
+  },
+},
+
+{
+  type:
+    'function',
+
+  name:
+    'add_project_task',
+
+  description:
+    'Create a real Today task linked to a persistent A2 Project. Use when the user asks to add a task, action item, reminder, or piece of work to a specific Project.',
+
+  parameters: {
+    type:
+      'object',
+
+    properties: {
+      project_id: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      project_name: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      title: {
+        type:
+          'string',
+      },
+
+      notes: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      priority: {
+        anyOf: [
+          {
+            type:
+              'integer',
+
+            minimum:
+              1,
+
+            maximum:
+              5,
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+
+      due_at: {
+        anyOf: [
+          {
+            type:
+              'string',
+          },
+          {
+            type:
+              'null',
+          },
+        ],
+      },
+    },
+
+    required: [
+      'project_id',
+      'project_name',
+      'title',
+      'notes',
+      'priority',
+      'due_at',
+    ],
+
+    additionalProperties:
+      false,
+  },
+},
 ];
 
 // ============================================================
@@ -734,6 +1160,88 @@ Never claim a task was created, modified, completed, reopened, or deleted until 
 
 If multiple tasks could match the user's request, ask which one instead of guessing.
 
+PROJECTS
+
+You have authenticated access to the user's persistent A2 Projects through tools.
+
+Projects are authoritative persistent workspaces. They can contain:
+
+- name
+- summary
+- objective
+- next step
+- priority
+- status
+- linked Today tasks
+
+Use list_projects when the user asks what Projects they have or what they are working on.
+
+Use get_project before answering factual questions about the current state of a specific Project, including:
+
+- objective
+- next step
+- priority
+- status
+- linked tasks
+
+Use create_project only when the user clearly asks to create a Project.
+
+Use update_project when the user explicitly changes:
+
+- summary
+- objective
+- next step
+- priority
+- status
+
+Project statuses are:
+
+active
+on_hold
+completed
+archived
+
+Natural phrases:
+
+"put it on hold"
+means status on_hold.
+
+"make it active again"
+means status active.
+
+"the project is done"
+means status completed.
+
+"archive it"
+means status archived.
+
+Use add_project_task when the user asks to add an action or task to a specific Project.
+
+A Project task is also a real task in the user's Today system.
+
+Never pretend a Project was created, changed, or given a task until the tool confirms success.
+
+Never invent current Project state from conversation memory when a Project tool can retrieve the authoritative value.
+
+If the tool reports multiple matching Projects, ask the user which one they mean.
+
+If a Project does not exist, say so rather than silently creating one.
+
+Natural follow-ups should retain context.
+
+Example:
+
+User:
+"What's next for A2?"
+
+After retrieving the A2 Project, if the user then says:
+
+"Change it to finish the Live Voice integration."
+
+"It" refers to that Project's next step.
+
+Be concise when confirming Project actions in voice.
+
 DATES
 
 When a task requires a due time, return due_at as ISO 8601 with an explicit timezone offset.
@@ -774,12 +1282,50 @@ External calendar, email, files, finance integrations, and other tools are still
 Never claim access to systems that are not actually provided.
                     `.trim(),
 
-                    audio: {
-                      output: {
-                        voice:
-                          'marin',
-                      },
-                    },
+audio: {
+  input: {
+    transcription: {
+      model:
+        'gpt-live-transcribe',
+
+      languages: [
+        'en',
+        'es',
+      ],
+
+      delay:
+        'low',
+
+      prompt:
+        'A private personal assistant conversation with A2. Preserve names, dates, times, numbers, project names, reminders, preferences, and task instructions accurately.',
+    },
+
+    turn_detection: {
+      type:
+        'server_vad',
+
+      threshold:
+        0.5,
+
+      prefix_padding_ms:
+        300,
+
+      silence_duration_ms:
+        650,
+
+      create_response:
+        true,
+
+      interrupt_response:
+        true,
+    },
+  },
+
+  output: {
+    voice:
+      'marin',
+  },
+},
                   },
                 }),
             }

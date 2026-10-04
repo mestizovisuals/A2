@@ -14,6 +14,19 @@ const VALID_STATUSES: TaskStatus[] = [
   'completed',
   'cancelled',
 ];
+type ProjectStatus =
+  | 'active'
+  | 'on_hold'
+  | 'completed'
+  | 'archived';
+
+const VALID_PROJECT_STATUSES:
+  ProjectStatus[] = [
+    'active',
+    'on_hold',
+    'completed',
+    'archived',
+  ];
 
 function validPriority(
   value: unknown
@@ -58,6 +71,260 @@ function normalizeDueDate(
   }
 
   return date.toISOString();
+}
+
+function cleanOptionalText(
+  value: unknown
+): string | null {
+  if (
+    typeof value !==
+    'string'
+  ) {
+    return null;
+  }
+
+  const clean =
+    value.trim();
+
+  return clean ||
+    null;
+}
+
+async function resolveProject({
+  supabase,
+  userId,
+  projectId,
+  projectName,
+}: {
+  supabase: any;
+  userId: string;
+  projectId?: unknown;
+  projectName?: unknown;
+}) {
+  // ----------------------------------------------------------
+  // TRY PROJECT ID FIRST
+  // ----------------------------------------------------------
+
+  if (
+    typeof projectId ===
+      'string' &&
+    projectId.trim()
+  ) {
+    const {
+      data,
+      error,
+    } =
+      await supabase
+        .from(
+          'projects'
+        )
+        .select(`
+          id,
+          name,
+          summary,
+          objective,
+          next_step,
+          status,
+          priority,
+          last_activity_at
+        `)
+        .eq(
+          'user_id',
+          userId
+        )
+        .eq(
+          'id',
+          projectId.trim()
+        )
+        .maybeSingle();
+
+    if (error) {
+      console.error(
+        'A2 live project ID lookup error:',
+        error
+      );
+    }
+
+    if (data) {
+      return {
+        project:
+          data,
+
+        ambiguous:
+          false,
+
+        matches:
+          [] as string[],
+      };
+    }
+  }
+
+  // ----------------------------------------------------------
+  // PROJECT NAME
+  // ----------------------------------------------------------
+
+  if (
+    typeof projectName !==
+      'string' ||
+    !projectName.trim()
+  ) {
+    return {
+      project:
+        null,
+
+      ambiguous:
+        false,
+
+      matches:
+        [] as string[],
+    };
+  }
+
+  const cleanName =
+    projectName.trim();
+
+  // Exact case-insensitive match.
+  const {
+    data:
+      exactMatches,
+
+    error:
+      exactError,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .select(`
+        id,
+        name,
+        summary,
+        objective,
+        next_step,
+        status,
+        priority,
+        last_activity_at
+      `)
+      .eq(
+        'user_id',
+        userId
+      )
+      .ilike(
+        'name',
+        cleanName
+      )
+      .limit(2);
+
+  if (exactError) {
+    console.error(
+      'A2 live exact project lookup error:',
+      exactError
+    );
+  }
+
+  if (
+    exactMatches?.length ===
+    1
+  ) {
+    return {
+      project:
+        exactMatches[0],
+
+      ambiguous:
+        false,
+
+      matches:
+        [] as string[],
+    };
+  }
+
+  // Partial name match.
+  const {
+    data:
+      partialMatches,
+
+    error:
+      partialError,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .select(`
+        id,
+        name,
+        summary,
+        objective,
+        next_step,
+        status,
+        priority,
+        last_activity_at
+      `)
+      .eq(
+        'user_id',
+        userId
+      )
+      .ilike(
+        'name',
+        `%${cleanName}%`
+      )
+      .limit(10);
+
+  if (partialError) {
+    console.error(
+      'A2 live partial project lookup error:',
+      partialError
+    );
+  }
+
+  if (
+    partialMatches?.length ===
+    1
+  ) {
+    return {
+      project:
+        partialMatches[0],
+
+      ambiguous:
+        false,
+
+      matches:
+        [] as string[],
+    };
+  }
+
+  if (
+    partialMatches &&
+    partialMatches.length >
+      1
+  ) {
+    return {
+      project:
+        null,
+
+      ambiguous:
+        true,
+
+      matches:
+        partialMatches.map(
+          (
+            project: any
+          ) =>
+            project.name
+        ),
+    };
+  }
+
+  return {
+    project:
+      null,
+
+    ambiguous:
+      false,
+
+    matches:
+      [] as string[],
+  };
 }
 
 export default {
@@ -146,6 +413,7 @@ export default {
               priority,
               due_at,
               completed_at,
+              project_id,
               source,
               created_at
             `)
@@ -319,6 +587,7 @@ export default {
               title,
               notes,
               status,
+              project_id,
               priority,
               due_at
             `)
@@ -632,6 +901,7 @@ export default {
               notes,
               status,
               priority,
+              project_id,
               due_at,
               completed_at
             `)
@@ -815,6 +1085,1036 @@ export default {
               `Deleted "${existingTask.title}".`,
           });
         }
+
+// ====================================================
+// LIST PROJECTS
+// ====================================================
+
+if (
+  tool ===
+  'list_projects'
+) {
+  const {
+    data,
+    error,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .select(`
+        id,
+        name,
+        summary,
+        objective,
+        next_step,
+        status,
+        priority,
+        last_activity_at
+      `)
+      .eq(
+        'user_id',
+        userId
+      )
+      .neq(
+        'status',
+        'archived'
+      )
+      .order(
+        'priority',
+        {
+          ascending:
+            false,
+        }
+      )
+      .order(
+        'last_activity_at',
+        {
+          ascending:
+            false,
+        }
+      );
+
+  if (error) {
+    console.error(
+      'A2 live project list error:',
+      error
+    );
+
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Could not load projects.',
+      },
+      {
+        status:
+          500,
+      }
+    );
+  }
+
+  return Response.json({
+    success:
+      true,
+
+    projects:
+      data ?? [],
+  });
+}
+
+// ====================================================
+// GET PROJECT
+// ====================================================
+
+if (
+  tool ===
+  'get_project'
+) {
+  const resolved =
+    await resolveProject({
+      supabase,
+
+      userId,
+
+      projectId:
+        args.project_id,
+
+      projectName:
+        args.project_name,
+    });
+
+  if (
+    resolved.ambiguous
+  ) {
+    return Response.json({
+      success:
+        false,
+
+      needs_clarification:
+        true,
+
+      error:
+        'More than one project matched.',
+
+      matches:
+        resolved.matches,
+    });
+  }
+
+  if (
+    !resolved.project
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Project not found.',
+      },
+      {
+        status:
+          404,
+      }
+    );
+  }
+
+  const project =
+    resolved.project;
+
+  const {
+    data:
+      projectTasks,
+
+    error:
+      taskError,
+  } =
+    await supabase
+      .from(
+        'tasks'
+      )
+      .select(`
+        id,
+        title,
+        notes,
+        status,
+        priority,
+        due_at,
+        completed_at
+      `)
+      .eq(
+        'user_id',
+        userId
+      )
+      .eq(
+        'project_id',
+        project.id
+      )
+      .neq(
+        'status',
+        'cancelled'
+      )
+      .order(
+        'priority',
+        {
+          ascending:
+            false,
+        }
+      )
+      .order(
+        'due_at',
+        {
+          ascending:
+            true,
+
+          nullsFirst:
+            false,
+        }
+      );
+
+  if (taskError) {
+    console.error(
+      'A2 live project task lookup error:',
+      taskError
+    );
+  }
+
+  return Response.json({
+    success:
+      true,
+
+    project,
+
+    tasks:
+      projectTasks ??
+      [],
+  });
+}
+
+// ====================================================
+// CREATE PROJECT
+// ====================================================
+
+if (
+  tool ===
+  'create_project'
+) {
+  const name =
+    typeof args.name ===
+      'string'
+      ? args.name.trim()
+      : '';
+
+  if (!name) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Project name is required.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  const {
+    data:
+      existingProject,
+
+    error:
+      existingError,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .select(`
+        id,
+        name
+      `)
+      .eq(
+        'user_id',
+        userId
+      )
+      .ilike(
+        'name',
+        name
+      )
+      .limit(1)
+      .maybeSingle();
+
+  if (existingError) {
+    console.error(
+      'A2 live duplicate project lookup error:',
+      existingError
+    );
+  }
+
+  if (
+    existingProject
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'A project with that name already exists.',
+
+        existing_project:
+          existingProject,
+      },
+      {
+        status:
+          409,
+      }
+    );
+  }
+
+  const priority =
+    args.priority ===
+      undefined ||
+    args.priority ===
+      null
+      ? 3
+      : args.priority;
+
+  if (
+    !validPriority(
+      priority
+    )
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Priority must be between 1 and 5.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  const status =
+    args.status ===
+      undefined ||
+    args.status ===
+      null
+      ? 'active'
+      : args.status;
+
+  if (
+    typeof status !==
+      'string' ||
+    !VALID_PROJECT_STATUSES.includes(
+      status as
+        ProjectStatus
+    )
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Invalid project status.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  const {
+    data,
+    error,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .insert({
+        user_id:
+          userId,
+
+        name,
+
+        summary:
+          cleanOptionalText(
+            args.summary
+          ),
+
+        objective:
+          cleanOptionalText(
+            args.objective
+          ),
+
+        next_step:
+          cleanOptionalText(
+            args.next_step
+          ),
+
+        status,
+
+        priority,
+
+        last_activity_at:
+          new Date()
+            .toISOString(),
+      })
+      .select(`
+        id,
+        name,
+        summary,
+        objective,
+        next_step,
+        status,
+        priority,
+        last_activity_at
+      `)
+      .single();
+
+  if (error) {
+    console.error(
+      'A2 live create project error:',
+      error
+    );
+
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Could not create project.',
+      },
+      {
+        status:
+          500,
+      }
+    );
+  }
+
+  return Response.json({
+    success:
+      true,
+
+    message:
+      `Created project "${data.name}".`,
+
+    project:
+      data,
+  });
+}
+
+// ====================================================
+// UPDATE PROJECT
+// ====================================================
+
+if (
+  tool ===
+  'update_project'
+) {
+  const resolved =
+    await resolveProject({
+      supabase,
+
+      userId,
+
+      projectId:
+        args.project_id,
+
+      projectName:
+        args.project_name,
+    });
+
+  if (
+    resolved.ambiguous
+  ) {
+    return Response.json({
+      success:
+        false,
+
+      needs_clarification:
+        true,
+
+      error:
+        'More than one project matched.',
+
+      matches:
+        resolved.matches,
+    });
+  }
+
+  if (
+    !resolved.project
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Project not found.',
+      },
+      {
+        status:
+          404,
+      }
+    );
+  }
+
+  const updates:
+    Record<
+      string,
+      unknown
+    > = {};
+
+  // --------------------------------------------------
+  // SUMMARY
+  // null = unchanged
+  // empty string = clear
+  // --------------------------------------------------
+
+  if (
+    args.summary !==
+      undefined &&
+    args.summary !==
+      null
+  ) {
+    if (
+      typeof args.summary !==
+      'string'
+    ) {
+      return Response.json(
+        {
+          success:
+            false,
+
+          error:
+            'Project summary must be text.',
+        },
+        {
+          status:
+            400,
+        }
+      );
+    }
+
+    updates.summary =
+      args.summary.trim() ||
+      null;
+  }
+
+  // --------------------------------------------------
+  // OBJECTIVE
+  // --------------------------------------------------
+
+  if (
+    args.objective !==
+      undefined &&
+    args.objective !==
+      null
+  ) {
+    if (
+      typeof args.objective !==
+      'string'
+    ) {
+      return Response.json(
+        {
+          success:
+            false,
+
+          error:
+            'Project objective must be text.',
+        },
+        {
+          status:
+            400,
+        }
+      );
+    }
+
+    updates.objective =
+      args.objective.trim() ||
+      null;
+  }
+
+  // --------------------------------------------------
+  // NEXT STEP
+  // --------------------------------------------------
+
+  if (
+    args.next_step !==
+      undefined &&
+    args.next_step !==
+      null
+  ) {
+    if (
+      typeof args.next_step !==
+      'string'
+    ) {
+      return Response.json(
+        {
+          success:
+            false,
+
+          error:
+            'Project next step must be text.',
+        },
+        {
+          status:
+            400,
+        }
+      );
+    }
+
+    updates.next_step =
+      args.next_step.trim() ||
+      null;
+  }
+
+  // --------------------------------------------------
+  // PRIORITY
+  // --------------------------------------------------
+
+  if (
+    args.priority !==
+      undefined &&
+    args.priority !==
+      null
+  ) {
+    if (
+      !validPriority(
+        args.priority
+      )
+    ) {
+      return Response.json(
+        {
+          success:
+            false,
+
+          error:
+            'Priority must be between 1 and 5.',
+        },
+        {
+          status:
+            400,
+        }
+      );
+    }
+
+    updates.priority =
+      args.priority;
+  }
+
+  // --------------------------------------------------
+  // STATUS
+  // --------------------------------------------------
+
+  if (
+    args.status !==
+      undefined &&
+    args.status !==
+      null
+  ) {
+    if (
+      typeof args.status !==
+        'string' ||
+      !VALID_PROJECT_STATUSES.includes(
+        args.status as
+          ProjectStatus
+      )
+    ) {
+      return Response.json(
+        {
+          success:
+            false,
+
+          error:
+            'Invalid project status.',
+        },
+        {
+          status:
+            400,
+        }
+      );
+    }
+
+    updates.status =
+      args.status;
+  }
+
+  if (
+    Object.keys(
+      updates
+    ).length ===
+    0
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'No project changes were supplied.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  updates.last_activity_at =
+    new Date()
+      .toISOString();
+
+  const {
+    data,
+    error,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .update(
+        updates
+      )
+      .eq(
+        'id',
+        resolved.project.id
+      )
+      .eq(
+        'user_id',
+        userId
+      )
+      .select(`
+        id,
+        name,
+        summary,
+        objective,
+        next_step,
+        status,
+        priority,
+        last_activity_at
+      `)
+      .maybeSingle();
+
+  if (error) {
+    console.error(
+      'A2 live update project error:',
+      error
+    );
+
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Could not update project.',
+      },
+      {
+        status:
+          500,
+      }
+    );
+  }
+
+  if (!data) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Project not found.',
+      },
+      {
+        status:
+          404,
+      }
+    );
+  }
+
+  return Response.json({
+    success:
+      true,
+
+    message:
+      `Updated project "${data.name}".`,
+
+    project:
+      data,
+  });
+}
+
+// ====================================================
+// ADD PROJECT TASK
+// ====================================================
+
+if (
+  tool ===
+  'add_project_task'
+) {
+  const resolved =
+    await resolveProject({
+      supabase,
+
+      userId,
+
+      projectId:
+        args.project_id,
+
+      projectName:
+        args.project_name,
+    });
+
+  if (
+    resolved.ambiguous
+  ) {
+    return Response.json({
+      success:
+        false,
+
+      needs_clarification:
+        true,
+
+      error:
+        'More than one project matched.',
+
+      matches:
+        resolved.matches,
+    });
+  }
+
+  if (
+    !resolved.project
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Project not found.',
+      },
+      {
+        status:
+          404,
+      }
+    );
+  }
+
+  const title =
+    typeof args.title ===
+      'string'
+      ? args.title.trim()
+      : '';
+
+  if (!title) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Task title is required.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  const priority =
+    args.priority ===
+      undefined ||
+    args.priority ===
+      null
+      ? 3
+      : args.priority;
+
+  if (
+    !validPriority(
+      priority
+    )
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Priority must be between 1 and 5.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  const dueAt =
+    normalizeDueDate(
+      args.due_at
+    );
+
+  if (
+    args.due_at !==
+      undefined &&
+    args.due_at !==
+      null &&
+    dueAt ===
+      undefined
+  ) {
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Invalid due date.',
+      },
+      {
+        status:
+          400,
+      }
+    );
+  }
+
+  const {
+    data:
+      task,
+
+    error:
+      taskError,
+  } =
+    await supabase
+      .from(
+        'tasks'
+      )
+      .insert({
+        user_id:
+          userId,
+
+        project_id:
+          resolved.project.id,
+
+        title,
+
+        notes:
+          cleanOptionalText(
+            args.notes
+          ),
+
+        status:
+          'open',
+
+        priority,
+
+        due_at:
+          dueAt ??
+          null,
+
+        source:
+          'a2',
+      })
+      .select(`
+        id,
+        title,
+        notes,
+        status,
+        priority,
+        due_at,
+        project_id
+      `)
+      .single();
+
+  if (taskError) {
+    console.error(
+      'A2 live create project task error:',
+      taskError
+    );
+
+    return Response.json(
+      {
+        success:
+          false,
+
+        error:
+          'Could not create project task.',
+      },
+      {
+        status:
+          500,
+      }
+    );
+  }
+
+  const {
+    error:
+      projectTouchError,
+  } =
+    await supabase
+      .from(
+        'projects'
+      )
+      .update({
+        last_activity_at:
+          new Date()
+            .toISOString(),
+      })
+      .eq(
+        'id',
+        resolved.project.id
+      )
+      .eq(
+        'user_id',
+        userId
+      );
+
+  if (
+    projectTouchError
+  ) {
+    console.error(
+      'A2 live project activity update error:',
+      projectTouchError
+    );
+  }
+
+  return Response.json({
+    success:
+      true,
+
+    message:
+      `Added "${task.title}" to ${resolved.project.name}.`,
+
+    project: {
+      id:
+        resolved.project.id,
+
+      name:
+        resolved.project.name,
+    },
+
+    task,
+  });
+}
 
         // ====================================================
         // UNKNOWN TOOL

@@ -1,11 +1,11 @@
 import {
-    useEffect,
-    useRef,
-    useState,
+  useEffect,
+  useRef,
+  useState,
 } from 'react';
 
 import {
-    supabase,
+  supabase,
 } from '../lib/supabase';
 
 export type A2LiveVoiceStatus =
@@ -63,6 +63,17 @@ export function useA2LiveVoice({
     >(
       new Set()
     );
+    const pendingUserTranscriptRef =
+  useRef('');
+
+const partialUserTranscriptRef =
+  useRef('');
+
+const finalAssistantTranscriptRef =
+  useRef('');
+
+const partialAssistantTranscriptRef =
+  useRef('');
 
   const [
     status,
@@ -213,29 +224,70 @@ export function useA2LiveVoice({
             }
           );
 
-      if (error) {
-        console.error(
-          'A2 live tool invoke error:',
-          error
-        );
+if (error) {
+  let functionErrorBody:
+    Record<string, any> | null =
+    null;
 
-        toolOutput = {
-          success:
-            false,
+  try {
+    const errorContext =
+      (error as any)
+        ?.context;
 
-          error:
-            'A2 could not complete that action.',
-        };
-      } else {
-        toolOutput =
-          data ?? {
-            success:
-              false,
+    if (
+      errorContext &&
+      typeof errorContext.json ===
+        'function'
+    ) {
+      const parsed =
+        await errorContext
+          .json();
 
-            error:
-              'A2 received no result from that action.',
-          };
+      if (
+        parsed &&
+        typeof parsed ===
+          'object'
+      ) {
+        functionErrorBody =
+          parsed;
       }
+    }
+  } catch (
+    parseError
+  ) {
+    console.warn(
+      'A2 could not read live tool error response:',
+      parseError
+    );
+  }
+
+  // A 4xx response can be an expected tool outcome,
+  // such as "project not found" or "needs clarification".
+  // Do not treat that as an app crash.
+  console.warn(
+    'A2 live tool returned a non-success result:',
+    functionErrorBody ??
+      error
+  );
+
+  toolOutput =
+    functionErrorBody ?? {
+      success:
+        false,
+
+      error:
+        'A2 could not complete that action.',
+    };
+} else {
+  toolOutput =
+    data ?? {
+      success:
+        false,
+
+      error:
+        'A2 received no result from that action.',
+    };
+}
     } catch (error) {
       console.error(
         'A2 live tool execution error:',
@@ -311,6 +363,104 @@ export function useA2LiveVoice({
     });
   }
 
+// ==========================================================
+// SAVE COMPLETED LIVE TURN TO A2 HISTORY
+// ==========================================================
+
+async function syncCompletedLiveTurn() {
+  const userText =
+    (
+      pendingUserTranscriptRef
+        .current ||
+      partialUserTranscriptRef
+        .current
+    ).trim();
+
+  const assistantText =
+    (
+      finalAssistantTranscriptRef
+        .current ||
+      partialAssistantTranscriptRef
+        .current
+    ).trim();
+
+  if (
+    !userText ||
+    !assistantText
+  ) {
+    return false;
+  }
+
+  try {
+    const {
+      data,
+      error,
+    } =
+      await supabase
+        .functions
+        .invoke(
+          'a2-live-sync',
+          {
+            body: {
+              user_text:
+                userText,
+
+              assistant_text:
+                assistantText,
+            },
+          }
+        );
+
+    if (
+      error
+    ) {
+      console.error(
+        'A2 live conversation sync error:',
+        error
+      );
+
+      return false;
+    }
+
+    if (
+      data?.success ===
+      false
+    ) {
+      console.error(
+        'A2 live conversation sync rejected:',
+        data
+      );
+
+      return false;
+    }
+
+    console.log(
+      'A2 live conversation saved.'
+    );
+
+    pendingUserTranscriptRef.current =
+      '';
+
+    partialUserTranscriptRef.current =
+      '';
+
+    finalAssistantTranscriptRef.current =
+      '';
+
+    partialAssistantTranscriptRef.current =
+      '';
+
+    return true;
+  } catch (error) {
+    console.error(
+      'A2 live conversation sync exception:',
+      error
+    );
+
+    return false;
+  }
+}
+
   // ==========================================================
   // HANDLE OPENAI EVENTS
   // ==========================================================
@@ -327,6 +477,54 @@ export function useA2LiveVoice({
       switch (
         event.type
       ) {
+
+case 'conversation.item.input_audio_transcription.delta': {
+  const delta =
+    typeof event.delta ===
+      'string'
+      ? event.delta
+      : '';
+
+  if (
+    delta
+  ) {
+    partialUserTranscriptRef.current +=
+      delta;
+  }
+
+  break;
+}
+
+case 'conversation.item.input_audio_transcription.completed': {
+  const transcript =
+    typeof event.transcript ===
+      'string'
+      ? event.transcript.trim()
+      : '';
+
+  const fallbackTranscript =
+    partialUserTranscriptRef.current
+      .trim();
+
+  const finalUserText =
+    transcript ||
+    fallbackTranscript;
+
+  if (
+    finalUserText
+  ) {
+    pendingUserTranscriptRef.current =
+      finalUserText;
+
+    partialUserTranscriptRef.current =
+      '';
+
+    await syncCompletedLiveTurn();
+  }
+
+  break;
+}
+        
         case 'session.created':
         case 'session.updated':
           break;
@@ -348,6 +546,12 @@ export function useA2LiveVoice({
             'thinking'
           );
 
+          partialAssistantTranscriptRef.current =
+  '';
+
+finalAssistantTranscriptRef.current =
+  '';
+
           setAssistantTranscript(
             ''
           );
@@ -363,6 +567,8 @@ export function useA2LiveVoice({
           if (!delta) {
             break;
           }
+          partialAssistantTranscriptRef.current +=
+  delta;
 
           setStatus(
             'speaking'
@@ -387,27 +593,32 @@ export function useA2LiveVoice({
           break;
         }
 
-        case 'response.output_audio_transcript.done': {
-          const transcript =
-            typeof event.transcript ===
-              'string'
-              ? event.transcript
-              : '';
+case 'response.output_audio_transcript.done': {
+  const transcript =
+    typeof event.transcript ===
+      'string'
+      ? event.transcript.trim()
+      : '';
 
-          if (
-            transcript
-          ) {
-            setAssistantTranscript(
-              transcript
-            );
+  if (
+    transcript
+  ) {
+    finalAssistantTranscriptRef.current =
+      transcript;
 
-            onAssistantTranscript?.(
-              transcript
-            );
-          }
+    setAssistantTranscript(
+      transcript
+    );
 
-          break;
-        }
+    onAssistantTranscript?.(
+      transcript
+    );
+
+    await syncCompletedLiveTurn();
+  }
+
+  break;
+}
 
         case 'response.done': {
           const output =
@@ -436,22 +647,24 @@ export function useA2LiveVoice({
             ) as
               RealtimeFunctionCall[];
 
-          if (
-            functionCalls.length >
-            0
-          ) {
-            await handleToolCalls(
-              functionCalls
-            );
+if (
+  functionCalls.length >
+  0
+) {
+  await handleToolCalls(
+    functionCalls
+  );
 
-            break;
-          }
+  break;
+}
 
-          setStatus(
-            'ready'
-          );
+await syncCompletedLiveTurn();
 
-          break;
+setStatus(
+  'ready'
+);
+
+break;
         }
 
         case 'response.cancelled':
@@ -732,41 +945,6 @@ export function useA2LiveVoice({
             'A2 realtime event channel open.'
           );
 
-          // Keep automatic conversational turn-taking.
-          sendEvent({
-            type:
-              'session.update',
-
-            session: {
-              type:
-                'realtime',
-
-              audio: {
-                input: {
-                  turn_detection: {
-                    type:
-                      'server_vad',
-
-                    threshold:
-                      0.5,
-
-                    prefix_padding_ms:
-                      300,
-
-                    silence_duration_ms:
-                      650,
-
-                    create_response:
-                      true,
-
-                    interrupt_response:
-                      true,
-                  },
-                },
-              },
-            },
-          });
-
           setConnected(
             true
           );
@@ -775,7 +953,6 @@ export function useA2LiveVoice({
             'ready'
           );
         };
-
       dataChannel.onmessage =
         (
           event: any
@@ -914,7 +1091,7 @@ export function useA2LiveVoice({
         error
       );
 
-      disconnect();
+      await disconnect();
 
       reportError(
         error instanceof Error
@@ -928,10 +1105,12 @@ export function useA2LiveVoice({
   // DISCONNECT
   // ==========================================================
 
-  function disconnect() {
-    try {
-      const channel =
-        dataChannelRef.current;
+async function disconnect() {
+  await syncCompletedLiveTurn();
+
+  try {
+    const channel =
+      dataChannelRef.current;
 
       if (channel) {
         channel.close();
@@ -989,22 +1168,34 @@ export function useA2LiveVoice({
       }
     }
 
-    audioElementRef.current =
-      null;
+audioElementRef.current =
+  null;
 
-    processedCallsRef.current.clear();
+processedCallsRef.current.clear();
 
-    setConnected(
-      false
-    );
+pendingUserTranscriptRef.current =
+  '';
 
-    setStatus(
-      'idle'
-    );
+partialUserTranscriptRef.current =
+  '';
 
-    setAssistantTranscript(
-      ''
-    );
+finalAssistantTranscriptRef.current =
+  '';
+
+partialAssistantTranscriptRef.current =
+  '';
+
+setConnected(
+  false
+);
+
+setStatus(
+  'idle'
+);
+
+setAssistantTranscript(
+  ''
+);
   }
 
   // ==========================================================
@@ -1015,7 +1206,7 @@ export function useA2LiveVoice({
     if (
       connected
     ) {
-      disconnect();
+      await disconnect();
       return;
     }
 
@@ -1026,11 +1217,11 @@ export function useA2LiveVoice({
   // CLEANUP
   // ==========================================================
 
-  useEffect(() => {
-    return () => {
-      disconnect();
-    };
-  }, []);
+useEffect(() => {
+  return () => {
+    void disconnect();
+  };
+}, []);
 
   return {
     connected,

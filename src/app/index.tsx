@@ -24,6 +24,10 @@ import {
   useA2Voice,
 } from '../hooks/useA2Voice';
 
+import {
+  useA2LiveVoice,
+} from '../hooks/useA2LiveVoice';
+
 export default function HomeScreen() {
   const router = useRouter();
   const { width, height } = useWindowDimensions();
@@ -312,6 +316,89 @@ export default function HomeScreen() {
         );
       },
   });
+    // ------------------------------------------------------------
+  // LIVE REALTIME VOICE
+  // ------------------------------------------------------------
+
+  const {
+    connected:
+      liveVoiceConnected,
+
+    status:
+      liveVoiceStatus,
+
+    connect:
+      connectLiveVoice,
+
+    disconnect:
+      disconnectLiveVoice,
+  } = useA2LiveVoice({
+    onAssistantTranscript:
+      (text) => {
+        setErrorMessage('');
+
+        setReply(text);
+      },
+
+    onError:
+      (message) => {
+        setErrorMessage(
+          message
+        );
+      },
+  });
+    // ------------------------------------------------------------
+  // ORB VOICE CONTROLS
+  // ------------------------------------------------------------
+
+  const orbVoiceActive =
+    listening ||
+    liveVoiceConnected ||
+    liveVoiceStatus ===
+      'connecting';
+
+  async function handleOrbPress() {
+    // If Live A2 is running,
+    // one tap ends the live session.
+    if (
+      liveVoiceConnected
+    ) {
+      disconnectLiveVoice();
+      return;
+    }
+
+    // Do not trigger quick voice
+    // while Live is still connecting.
+    if (
+      liveVoiceStatus ===
+      'connecting'
+    ) {
+      return;
+    }
+
+    await toggleRecording();
+  }
+
+  async function handleOrbLongPress() {
+    // Ignore long presses if
+    // another voice operation is active.
+    if (
+      listening ||
+      voiceTranscribing ||
+      thinking ||
+      liveVoiceConnected ||
+      liveVoiceStatus ===
+        'connecting'
+    ) {
+      return;
+    }
+
+    setErrorMessage('');
+    setReply('');
+    setDraft('');
+
+    await connectLiveVoice();
+  }
   // ------------------------------------------------------------
   // AUTH LOADING SCREEN
   // ------------------------------------------------------------
@@ -459,12 +546,25 @@ export default function HomeScreen() {
 
 <Pressable
   onPress={
-    toggleRecording
+    handleOrbPress
   }
+
+  onLongPress={
+    handleOrbLongPress
+  }
+
+  delayLongPress={
+    650
+  }
+
   disabled={
-    thinking ||
-    voiceTranscribing
+    voiceTranscribing ||
+    (
+      thinking &&
+      !liveVoiceConnected
+    )
   }
+
   style={
     styles.orbButton
   }
@@ -544,8 +644,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixel,
                   styles.pixelOne,
-                  listening &&
-                    styles.pixelListening,
+orbVoiceActive &&
+  styles.pixelListening
                 ]}
               />
 
@@ -553,8 +653,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixel,
                   styles.pixelTwo,
-                  listening &&
-                    styles.pixelListening,
+orbVoiceActive &&
+  styles.pixelListening
                 ]}
               />
 
@@ -562,8 +662,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixel,
                   styles.pixelThree,
-                  listening &&
-                    styles.pixelListening,
+orbVoiceActive &&
+  styles.pixelListening
                 ]}
               />
 
@@ -571,8 +671,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixelTiny,
                   styles.pixelFour,
-                  listening &&
-                    styles.pixelListening,
+orbVoiceActive &&
+  styles.pixelListening
                 ]}
               />
 
@@ -580,8 +680,8 @@ export default function HomeScreen() {
                 style={[
                   styles.pixelTiny,
                   styles.pixelFive,
-                  listening &&
-                    styles.pixelListening,
+orbVoiceActive &&
+  styles.pixelListening
                 ]}
               />
             </View>
@@ -592,14 +692,45 @@ export default function HomeScreen() {
           {/* -------------------------------------------------- */}
 
           <Text style={styles.mode}>
-{thinking
-  ? 'Thinking…'
+{liveVoiceStatus ===
+  'connecting'
+  ? 'Starting Live A2…'
+
+  : liveVoiceStatus ===
+      'listening'
+    ? 'Live • Listening…'
+
+  : liveVoiceStatus ===
+      'thinking'
+    ? 'Live • Thinking…'
+
+  : liveVoiceStatus ===
+      'speaking'
+    ? 'Live • A2 speaking…'
+
+  : liveVoiceConnected
+    ? 'Live • Speak naturally'
+
+  : thinking
+    ? 'Thinking…'
+
   : voiceTranscribing
     ? 'Processing voice…'
-    : listening
-      ? 'Listening… tap to send'
-      : 'Tap to speak'}
+
+  : listening
+    ? 'Listening… tap to send'
+
+  : 'Tap to speak • hold for live'}
           </Text>
+          {liveVoiceConnected && (
+  <Text
+    style={
+      styles.liveDisclosure
+    }
+  >
+    LIVE VOICE • AI-GENERATED
+  </Text>
+)}
 
           {/* -------------------------------------------------- */}
           {/* RESPONSE AREA                                     */}
@@ -870,6 +1001,17 @@ brand: {
     color:
       'rgba(36, 35, 32, 0.42)',
   },
+
+  liveDisclosure: {
+  marginTop: 8,
+
+  fontSize: 8,
+
+  letterSpacing: 1.4,
+
+  color:
+    'rgba(36, 35, 32, 0.28)',
+},
 
   question: {
     marginTop: 25,

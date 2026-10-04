@@ -3,11 +3,13 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { withSupabase } from 'npm:@supabase/server@^1';
 
 import {
+  processProjectIntent,
+  type ProjectToolResult,
+} from './projectTools.ts';
+import {
   processTaskIntent,
   type TaskToolResult,
 } from './taskTools.ts';
-
-
 // ============================================================
 // A2 SETTINGS
 // ============================================================
@@ -219,43 +221,198 @@ function limitText(
 
 function looksLikeTaskRequest(
   message: string
-): boolean {
+) {
   const normalized =
-    message.toLowerCase();
+    message
+      .toLowerCase()
+      .replace(
+        /[’]/g,
+        "'"
+      )
+      .replace(
+        /\s+/g,
+        ' '
+      )
+      .trim();
 
-  const patterns = [
-    /\bremind\b/,
-    /\breminder\b/,
-    /\btask\b/,
-    /\btasks\b/,
-    /\btodo\b/,
-    /\bto-do\b/,
-    /\bdue\b/,
-    /\bdeadline\b/,
-    /\bpriority\b/,
-    /\bcomplete\b/,
-    /\bcompleted\b/,
-    /\bfinished\b/,
-    /\bfinish\b/,
-    /\breopen\b/,
-    /\bdelete\b/,
-    /\bremove\b/,
-    /\bcancel\b/,
-    /\btomorrow\b/,
-    /\btonight\b/,
-    /\bthis afternoon\b/,
-    /\bthis evening\b/,
-    /\bthis morning\b/,
-    /\bwhat do i have today\b/,
-    /\bwhat do i need to do\b/,
-    /\bwhat's on my list\b/,
-    /\bwhat is on my list\b/,
-    /\badd .* to my list\b/,
+  // ----------------------------------------------------------
+  // EXPLICIT TASK WORDS / ACTIONS
+  // ----------------------------------------------------------
+
+  const explicitTaskTerms =
+    /\b(remind|reminder|reminders|task|tasks|todo|to-do|due|deadline|priority|prioritize|complete|completed|finish|finished|reopen|delete|remove|cancel|reschedule|schedule|scheduled|start|pause)\b/i;
+
+  if (
+    explicitTaskTerms.test(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
+  // ----------------------------------------------------------
+  // NATURAL "WHAT DO I HAVE?" PHRASES
+  // ----------------------------------------------------------
+
+  const naturalTaskQueries = [
+    'what do i have today',
+    'what do i have for today',
+    'what do i have tomorrow',
+    'what do i have for tomorrow',
+
+    'what have i got today',
+    'what have i got for today',
+
+    'do i have anything today',
+    'do i have anything for today',
+    'do i have anything tomorrow',
+
+    'what do i need to do',
+    'what do i need to get done',
+
+    "what's on my plate",
+    'what is on my plate',
+
+    "what's on my list",
+    'what is on my list',
+
+    "what's on my schedule",
+    'what is on my schedule',
+
+    "what's planned for today",
+    'what is planned for today',
+
+    "what's planned for tomorrow",
+    'what is planned for tomorrow',
+
+    "what's due today",
+    'what is due today',
+
+    "what's due tomorrow",
+    'what is due tomorrow',
+
+    'anything due today',
+    'anything due tomorrow',
+
+    'anything i need to do today',
+    'anything i need to do tomorrow',
+
+    "today's tasks",
+    'todays tasks',
+
+    "tomorrow's tasks",
+    'tomorrows tasks',
+
+    "today's plan",
+    'todays plan',
+
+    'my tasks',
+    'my reminders',
+    'my todo list',
+    'my to-do list',
+
+    'show me my tasks',
+    'show my tasks',
+
+    'list my tasks',
+
+    'agenda for today',
+    "today's agenda",
+    'todays agenda',
   ];
 
-  return patterns.some(
+  if (
+    naturalTaskQueries.some(
+      (phrase) =>
+        normalized.includes(
+          phrase
+        )
+    )
+  ) {
+    return true;
+  }
+
+  // ----------------------------------------------------------
+  // FLEXIBLE NATURAL PATTERNS
+  // ----------------------------------------------------------
+
+  const flexiblePatterns = [
+    /\bwhat (?:do|did) i have (?:for )?(?:today|tomorrow|tonight)\b/i,
+
+    /\bdo i have (?:anything|something) (?:for )?(?:today|tomorrow|tonight)\b/i,
+
+    /\bwhat am i (?:doing|supposed to do) (?:today|tomorrow|tonight)\b/i,
+
+    /\bwhat should i (?:do|work on) (?:today|tomorrow)\b/i,
+
+    /\banything (?:scheduled|planned|due) (?:for )?(?:today|tomorrow|tonight)\b/i,
+
+    /\bwhat(?:'s| is) (?:scheduled|planned|due) (?:for )?(?:today|tomorrow|tonight)\b/i,
+  ];
+
+  return flexiblePatterns.some(
     (pattern) =>
-      pattern.test(normalized)
+      pattern.test(
+        normalized
+      )
+  );
+}
+// ============================================================
+// PROJECT INTENT DETECTION
+// ============================================================
+
+function looksLikeProjectRequest(
+  message: string
+): boolean {
+  const normalized =
+    message
+      .toLowerCase()
+      .replace(
+        /[’]/g,
+        "'"
+      )
+      .replace(
+        /\s+/g,
+        ' '
+      )
+      .trim();
+
+  const explicitProjectTerms =
+    /\b(project|projects|project's|objective|next step|project priority|project status|archive project)\b/i;
+
+  if (
+    explicitProjectTerms.test(
+      normalized
+    )
+  ) {
+    return true;
+  }
+
+  const naturalPatterns = [
+    /\bwhat(?:'s| is) next for\b/i,
+
+    /\bwhat should i work on (?:next )?for\b/i,
+
+    /\bput .+ on hold\b/i,
+
+    /\bpause .+\b/i,
+
+    /\bresume .+\b/i,
+
+    /\bmark .+ (?:project )?(?:complete|completed|active)\b/i,
+
+    /\badd .+ to .+\b/i,
+
+    /\badd .+ under .+\b/i,
+
+    /\bwhat(?:'s| is) the objective for\b/i,
+  ];
+
+  return naturalPatterns.some(
+    (pattern) =>
+      pattern.test(
+        normalized
+      )
   );
 }
 
@@ -2131,6 +2288,62 @@ const recentContextLooksTaskRelated =
         )
     );
 
+    // ----------------------------------------------------
+// PROJECT TOOL
+// ----------------------------------------------------
+
+const recentContextLooksProjectRelated =
+  chronologicalMessages
+    .slice(-4)
+    .some(
+      (
+        storedMessage
+      ) =>
+        looksLikeProjectRequest(
+          storedMessage.content
+        )
+    );
+
+let projectToolResult:
+  ProjectToolResult = {
+  handled:
+    false,
+
+  needsClarification:
+    false,
+
+  clarificationQuestion:
+    null,
+
+  context:
+    'No Project action was requested.',
+};
+
+if (
+  looksLikeProjectRequest(
+    cleanMessage
+  ) ||
+  recentContextLooksProjectRelated
+) {
+  projectToolResult =
+    await processProjectIntent({
+      openAIKey,
+
+      supabase,
+
+      userId,
+
+      message:
+        cleanMessage,
+
+      clientNow,
+
+      clientTimezone,
+
+      recentConversation:
+        recentConversationText,
+    });
+}
 let taskToolResult:
   TaskToolResult = {
     handled: false,
@@ -2146,10 +2359,14 @@ let taskToolResult:
   };
 
 if (
-  looksLikeTaskRequest(
-    cleanMessage
-  ) ||
-  recentContextLooksTaskRelated
+  !projectToolResult.handled &&
+  !projectToolResult.needsClarification &&
+  (
+    looksLikeTaskRequest(
+      cleanMessage
+    ) ||
+    recentContextLooksTaskRelated
+  )
 ) {
   taskToolResult =
     await processTaskIntent({
@@ -2171,6 +2388,80 @@ if (
     });
 }
 
+// ----------------------------------------------------
+// PROJECT CLARIFICATION
+// ----------------------------------------------------
+
+if (
+  projectToolResult
+    .needsClarification
+) {
+  const clarificationReply =
+    projectToolResult
+      .clarificationQuestion ||
+    'Which project do you mean?';
+
+  const {
+    error:
+      projectClarificationSaveError,
+  } = await supabase
+    .from(
+      'messages'
+    )
+    .insert({
+      conversation_id:
+        conversationId,
+
+      user_id:
+        userId,
+
+      role:
+        'assistant',
+
+      content:
+        clarificationReply,
+    });
+
+  if (
+    projectClarificationSaveError
+  ) {
+    console.error(
+      'Project clarification save error:',
+      projectClarificationSaveError
+    );
+  }
+
+  await supabase
+    .from(
+      'conversations'
+    )
+    .update({
+      last_message_at:
+        new Date()
+          .toISOString(),
+    })
+    .eq(
+      'id',
+      conversationId
+    );
+
+  return Response.json(
+    {
+      reply:
+        clarificationReply,
+
+      conversation_id:
+        conversationId,
+
+      project_action:
+        true,
+    },
+    {
+      status:
+        200,
+    }
+  );
+}
 // ----------------------------------------------------
 // TASK CLARIFICATION
 // ----------------------------------------------------
@@ -2338,9 +2629,53 @@ Do not mention these numbers unless explicitly asked.
 
 Familiarity should affect efficiency and natural shorthand, not create fake emotional intimacy.
 
-TODAY TASK SYSTEM
+PROJECT SYSTEM
 
-A2 has a persistent Today task system.
+A2 has authenticated access to the user's persistent Projects system.
+
+Result from the Project action layer for the latest request:
+
+${projectToolResult.context}
+
+PROJECT BEHAVIOR
+
+Project action results are authoritative whenever the Project layer has been invoked.
+
+Projects represent ongoing areas of work with:
+
+- a name
+- summary
+- objective
+- next step
+- status
+- priority
+- linked Today tasks
+
+When a Project result contains actual current information, answer from that information rather than guessing from memory.
+
+If the Project layer confirms a Project was created or updated, concisely confirm the actual operation.
+
+Never claim a Project was created, modified, paused, completed, archived, or given a linked task unless the Project result confirms success.
+
+Project tasks use the same persistent Today task system.
+
+Therefore, a task created inside a Project is also a real Today task.
+
+When the user asks:
+
+"What projects am I working on?"
+"What's next for Azucar?"
+"What is the objective for A2?"
+"Put Mestizo on hold."
+"Add finish homepage to Sun Valley Sparkle."
+
+use the Project action result when supplied.
+
+Do not invent Project state from durable memory when authoritative Project data is available.
+
+TODAY / TASK SYSTEM
+
+A2 has authenticated access to the user's persistent Today task system.
 
 Result from the task-action layer for the user's latest request:
 
@@ -2348,11 +2683,43 @@ ${taskToolResult.context}
 
 TASK BEHAVIOR
 
+The task-action layer is authoritative for the user's current task data whenever it has been invoked.
+
+Natural questions such as:
+
+"What do I have today?"
+"What do I have for today?"
+"What do I have tomorrow?"
+"What do I need to do?"
+"What's on my plate?"
+"What's on my list?"
+"Anything due today?"
+"Anything due tomorrow?"
+"What's planned for today?"
+
+are questions about the user's real Today task system.
+
+When the task-action layer provides task data, answer from that data rather than from memory or conversation history.
+
+Never say:
+
+"I don't have access to your Today list."
+"I don't have a current Today task list available."
+"I can't see your tasks."
+
+when the task-action result has supplied actual task information.
+
+If the task-action result says there are no tasks due today, say that clearly.
+
+You may mention overdue or upcoming tasks when useful, but distinguish them from tasks actually due today.
+
+Do not claim a task exists merely because it was mentioned earlier in conversation.
+
+Do not infer the current status, due date, or completion state of a task from memory when authoritative Today data is available.
+
 If the task-action layer says a task was created, changed, started, completed, reopened, or deleted, accurately and concisely confirm that action.
 
-If it provides a task list, answer using that actual task data.
-
-Never claim you changed a task unless the task-action result confirms that the database action succeeded.
+Never claim you changed a task unless the task-action result confirms the database action succeeded.
 
 Do not tell the user to manually open Today when you have already successfully performed the requested task action.
 
@@ -2430,8 +2797,12 @@ You currently have:
 - an evolving per-user working relationship profile
 - a persistent Today task system
 - the ability to create, update, start, complete, reopen, delete, and review Today tasks
+- push-to-talk voice input
+- continuous Live Voice conversation
+- persistent Projects with objectives, next steps, statuses, priorities, and linked Today tasks
+- the ability to create, inspect, update, pause, complete, archive, and add tasks to Projects
 
-Projects, external calendar integration, email, files, finances, proactive notifications, and full voice interaction are still being developed.
+External calendar integration, email, files, finances, and proactive notifications are still being developed.
 
 Never pretend unavailable capabilities already exist.
                   `.trim(),
@@ -2643,6 +3014,9 @@ Never pretend unavailable capabilities already exist.
 
     task_action:
       taskToolResult.handled,
+
+    project_action:
+      projectToolResult.handled,
   },
 
   {
