@@ -377,8 +377,12 @@ function looksLikeProjectRequest(
       )
       .trim();
 
+  // ----------------------------------------------------------
+  // EXPLICIT PROJECT LANGUAGE
+  // ----------------------------------------------------------
+
   const explicitProjectTerms =
-    /\b(project|projects|project's|objective|next step|project priority|project status|archive project)\b/i;
+    /\b(project|projects|project's|project objective|project priority|project status|archive project)\b/i;
 
   if (
     explicitProjectTerms.test(
@@ -388,27 +392,86 @@ function looksLikeProjectRequest(
     return true;
   }
 
-  const naturalPatterns = [
-    /\bwhat(?:'s| is) next for\b/i,
+  // ----------------------------------------------------------
+  // NATURAL PROJECT COMMANDS
+  //
+  // IMPORTANT:
+  // These require explicit "project" wording.
+  // Generic phrases like "add a task to call the dentist"
+  // must NOT enter the Projects system.
+  // ----------------------------------------------------------
 
-    /\bwhat should i work on (?:next )?for\b/i,
+  const projectPatterns = [
+    /\bwhat(?:'s| is) next for (?:the )?.+ project\b/i,
 
-    /\bput .+ on hold\b/i,
+    /\bwhat should i work on (?:next )?for (?:the )?.+ project\b/i,
 
-    /\bpause .+\b/i,
+    /\bput (?:the )?.+ project on hold\b/i,
 
-    /\bresume .+\b/i,
+    /\bpause (?:the )?.+ project\b/i,
 
-    /\bmark .+ (?:project )?(?:complete|completed|active)\b/i,
+    /\bresume (?:the )?.+ project\b/i,
 
-    /\badd .+ to .+\b/i,
+    /\bmark (?:the )?.+ project (?:complete|completed|active)\b/i,
 
-    /\badd .+ under .+\b/i,
+    /\badd .+ to (?:the )?.+ project\b/i,
 
-    /\bwhat(?:'s| is) the objective for\b/i,
+    /\badd .+ under (?:the )?.+ project\b/i,
+
+    /\bwhat(?:'s| is) the objective for (?:the )?.+ project\b/i,
   ];
 
-  return naturalPatterns.some(
+  return projectPatterns.some(
+    (pattern) =>
+      pattern.test(
+        normalized
+      )
+  );
+}
+
+function looksLikeProjectFollowUp(
+  message: string
+): boolean {
+  const normalized =
+    message
+      .toLowerCase()
+      .replace(
+        /[’]/g,
+        "'"
+      )
+      .replace(
+        /\s+/g,
+        ' '
+      )
+      .trim();
+
+  const followUpPatterns = [
+    /\barchive (?:it|that)\b/i,
+
+    /\bpause (?:it|that)\b/i,
+
+    /\bresume (?:it|that)\b/i,
+
+    /\bcomplete (?:it|that)\b/i,
+
+    /\bput (?:it|that) on hold\b/i,
+
+    /\bmake (?:it|that) active(?: again)?\b/i,
+
+    /\bmark (?:it|that) complete\b/i,
+
+    /\bchange (?:its|the) next step\b/i,
+
+    /\bchange (?:its|the) objective\b/i,
+
+    /\bchange (?:its|the) priority\b/i,
+
+    /\bset (?:its|the) next step\b/i,
+
+    /\bset (?:its|the) priority\b/i,
+  ];
+
+  return followUpPatterns.some(
     (pattern) =>
       pattern.test(
         normalized
@@ -2278,12 +2341,115 @@ const recentConversationText =
     )
     .join('\n\n');
 
+// ----------------------------------------------------
+// CLEAN TASK-ONLY CONVERSATION CONTEXT
+//
+// Project conversations must not leak into
+// ordinary standalone Today task creation.
+// ----------------------------------------------------
+
+const recentTaskMessages =
+  chronologicalMessages
+    .slice(-8)
+    .filter(
+      (
+        storedMessage,
+        index,
+        messages
+      ) => {
+        const content =
+          storedMessage.content;
+
+        const normalized =
+          content
+            .toLowerCase()
+            .replace(
+              /[’]/g,
+              "'"
+            )
+            .replace(
+              /\s+/g,
+              ' '
+            )
+            .trim();
+
+        const isProjectMessage =
+          looksLikeProjectRequest(
+            content
+          );
+
+        const isProjectClarification =
+          /\bwhich project\b|\bwhat project\b|\bproject should\b|\bbelong to (?:a |the )?project\b|\bwhich .* project\b/i.test(
+            normalized
+          );
+
+        if (
+          isProjectMessage ||
+          isProjectClarification
+        ) {
+          return false;
+        }
+
+        // If the previous message was specifically
+        // asking the user to choose a Project,
+        // also remove the short answer to that
+        // clarification from Today-task context.
+        const previousMessage =
+          index >
+          0
+            ? messages[
+                index - 1
+              ]
+            : null;
+
+        if (
+          previousMessage
+        ) {
+          const previousText =
+            previousMessage
+              .content
+              .toLowerCase();
+
+          const previousWasProjectClarification =
+            /\bwhich project\b|\bwhat project\b|\bproject should\b|\bbelong to (?:a |the )?project\b/i.test(
+              previousText
+            );
+
+          if (
+            previousWasProjectClarification &&
+            storedMessage.role ===
+              'user'
+          ) {
+            return false;
+          }
+        }
+
+        return true;
+      }
+    );
+
+const recentTaskConversationText =
+  recentTaskMessages
+    .slice(-6)
+    .map(
+      (
+        storedMessage
+      ) =>
+        `${storedMessage.role.toUpperCase()}: ${storedMessage.content}`
+    )
+    .join('\n\n');
+
 const recentContextLooksTaskRelated =
   chronologicalMessages
     .slice(-4)
     .some(
-      (storedMessage) =>
+      (
+        storedMessage
+      ) =>
         looksLikeTaskRequest(
+          storedMessage.content
+        ) &&
+        !looksLikeProjectRequest(
           storedMessage.content
         )
     );
@@ -2319,11 +2485,29 @@ let projectToolResult:
     'No Project action was requested.',
 };
 
-if (
+const currentLooksProjectRelated =
   looksLikeProjectRequest(
     cleanMessage
-  ) ||
-  recentContextLooksProjectRelated
+  );
+
+  const currentLooksTaskRelated =
+  looksLikeTaskRequest(
+    cleanMessage
+  );
+
+const currentIsStandaloneTaskRequest =
+  currentLooksTaskRelated &&
+  !currentLooksProjectRelated;
+
+const currentIsProjectFollowUp =
+  recentContextLooksProjectRelated &&
+  looksLikeProjectFollowUp(
+    cleanMessage
+  );
+
+if (
+  currentLooksProjectRelated ||
+  currentIsProjectFollowUp
 ) {
   projectToolResult =
     await processProjectIntent({
@@ -2340,31 +2524,44 @@ if (
 
       clientTimezone,
 
-      recentConversation:
-        recentConversationText,
+recentConversation:
+  currentIsStandaloneTaskRequest
+    ? `
+A2 CORE ROUTING NOTE
+
+The latest request is a standalone Today task.
+
+Do not assign it to a Project.
+Do not ask which Project it belongs to.
+The task's project_id should remain null unless the user explicitly names a Project in the latest request.
+
+Relevant Today conversation:
+
+${recentTaskConversationText}
+      `.trim()
+    : recentTaskConversationText,
     });
 }
 let taskToolResult:
   TaskToolResult = {
-    handled: false,
+  handled:
+    false,
 
-    needsClarification:
-      false,
+  needsClarification:
+    false,
 
-    clarificationQuestion:
-      null,
+  clarificationQuestion:
+    null,
 
-    context:
-      'No Today task action was requested.',
-  };
+  context:
+    'No Today task action was requested.',
+};
 
 if (
   !projectToolResult.handled &&
   !projectToolResult.needsClarification &&
   (
-    looksLikeTaskRequest(
-      cleanMessage
-    ) ||
+    currentLooksTaskRelated ||
     recentContextLooksTaskRelated
   )
 ) {
@@ -2384,10 +2581,73 @@ if (
       clientTimezone,
 
       recentConversation:
-        recentConversationText,
-    });
-}
+        currentIsStandaloneTaskRequest
+          ? `
+A2 CORE ROUTING NOTE
 
+The latest request is a standalone Today task.
+
+Do not assign it to a Project.
+Do not ask which Project it belongs to.
+The task's project_id should remain null unless the user explicitly names a Project in the latest request.
+
+Relevant Today conversation:
+
+${recentTaskConversationText}
+            `.trim()
+          : recentTaskConversationText,
+    });
+
+  // --------------------------------------------------
+  // SAFETY:
+  // A standalone Today task must never require
+  // the user to select a Project.
+  // --------------------------------------------------
+
+  if (
+    currentIsStandaloneTaskRequest &&
+    taskToolResult.needsClarification &&
+    /project/i.test(
+      taskToolResult
+        .clarificationQuestion ??
+        ''
+    )
+  ) {
+    console.warn(
+      'A2 task planner incorrectly requested Project clarification. Retrying as standalone Today task.'
+    );
+
+    taskToolResult =
+      await processTaskIntent({
+        openAIKey,
+
+        supabase,
+
+        userId,
+
+        message:
+          cleanMessage,
+
+        clientNow,
+
+        clientTimezone,
+
+        recentConversation: `
+A2 CORE ROUTING OVERRIDE
+
+This is explicitly a standalone Today task.
+
+Create or manage the task without attaching it to any Project.
+
+The task must have project_id = null.
+
+Do not ask the user which Project it belongs to.
+
+Only ask a clarification if an actually necessary task detail is missing, such as an ambiguous requested date or time.
+          `.trim(),
+      });
+  }
+}
 // ----------------------------------------------------
 // PROJECT CLARIFICATION
 // ----------------------------------------------------

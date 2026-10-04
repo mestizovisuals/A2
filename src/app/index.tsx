@@ -1,7 +1,16 @@
 import type { Session } from '@supabase/supabase-js';
-import { useRouter } from 'expo-router';
+import {
+  useFocusEffect,
+  useRouter,
+} from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import {
   Animated,
@@ -28,6 +37,52 @@ import {
   useA2LiveVoice,
 } from '../hooks/useA2LiveVoice';
 
+type HomeTask = {
+  id: string;
+  title: string;
+  status:
+    | 'open'
+    | 'in_progress'
+    | 'completed'
+    | 'cancelled';
+  priority: number;
+  due_at: string | null;
+  project_id: string | null;
+};
+
+type HomeProject = {
+  id: string;
+  name: string;
+  next_step: string | null;
+  status: string;
+  priority: number;
+  last_activity_at: string;
+};
+
+type DailyIntelligence = {
+  openTaskCount: number;
+  overdueCount: number;
+  dueTodayCount: number;
+  activeProjectCount: number;
+
+  priorityTask:
+    HomeTask | null;
+
+  priorityProject:
+    HomeProject | null;
+};
+
+const EMPTY_DAILY_INTELLIGENCE:
+  DailyIntelligence = {
+  openTaskCount: 0,
+  overdueCount: 0,
+  dueTodayCount: 0,
+  activeProjectCount: 0,
+
+  priorityTask: null,
+  priorityProject: null,
+};
+
 export default function HomeScreen() {
   const router = useRouter();
   const { width, height } = useWindowDimensions();
@@ -48,6 +103,39 @@ export default function HomeScreen() {
   const [reply, setReply] = useState('');
   const [thinking, setThinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  const [
+  dailyIntelligence,
+  setDailyIntelligence,
+] =
+  useState<DailyIntelligence>(
+    EMPTY_DAILY_INTELLIGENCE
+  );
+
+const [
+  dailyLoading,
+  setDailyLoading,
+] =
+  useState(true);
+  const [
+  homeBrief,
+  setHomeBrief,
+] =
+  useState('');
+
+const [
+  homeBriefLoading,
+  setHomeBriefLoading,
+] =
+  useState(false);
+
+const homeBriefSignatureRef =
+  useRef<string | null>(
+    null
+  );
+
+const homeBriefRequestRef =
+  useRef(false);
 
   // ------------------------------------------------------------
   // A2 ANIMATION VALUES
@@ -76,12 +164,37 @@ export default function HomeScreen() {
       setAuthLoading(false);
     });
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setAuthLoading(false);
-    });
+const {
+  data: { subscription },
+} = supabase.auth.onAuthStateChange(
+  (_event, nextSession) => {
+    setSession(
+      nextSession
+    );
+
+    setAuthLoading(
+      false
+    );
+
+    // Clear private Home intelligence
+    // whenever the authenticated session ends.
+    if (
+      !nextSession
+    ) {
+      setHomeBrief('');
+
+      setDailyIntelligence(
+        EMPTY_DAILY_INTELLIGENCE
+      );
+
+      homeBriefSignatureRef.current =
+        null;
+
+      homeBriefRequestRef.current =
+        false;
+    }
+  }
+);
 
     return () => {
       mounted = false;
@@ -156,6 +269,491 @@ export default function HomeScreen() {
 
     return 'Good evening';
   }, []);
+
+// ------------------------------------------------------------
+// DAILY INTELLIGENCE
+// ------------------------------------------------------------
+
+const loadDailyIntelligence =
+  useCallback(
+    async () => {
+      const userId =
+        session?.user?.id;
+
+      if (!userId) {
+        setDailyIntelligence(
+          EMPTY_DAILY_INTELLIGENCE
+        );
+
+        setDailyLoading(false);
+
+        return;
+      }
+
+      setDailyLoading(true);
+
+      try {
+        const [
+          taskResult,
+          projectResult,
+        ] =
+          await Promise.all([
+            supabase
+              .from('tasks')
+              .select(`
+                id,
+                title,
+                status,
+                priority,
+                due_at,
+                project_id
+              `)
+              .eq(
+                'user_id',
+                userId
+              )
+              .neq(
+                'status',
+                'completed'
+              )
+              .neq(
+                'status',
+                'cancelled'
+              )
+              .order(
+                'priority',
+                {
+                  ascending:
+                    false,
+                }
+              )
+              .limit(100),
+
+            supabase
+              .from('projects')
+              .select(`
+                id,
+                name,
+                next_step,
+                status,
+                priority,
+                last_activity_at
+              `)
+              .eq(
+                'user_id',
+                userId
+              )
+              .eq(
+                'status',
+                'active'
+              )
+              .order(
+                'priority',
+                {
+                  ascending:
+                    false,
+                }
+              )
+              .order(
+                'last_activity_at',
+                {
+                  ascending:
+                    false,
+                }
+              )
+              .limit(50),
+          ]);
+
+        if (
+          taskResult.error
+        ) {
+          throw taskResult.error;
+        }
+
+        if (
+          projectResult.error
+        ) {
+          throw projectResult.error;
+        }
+
+        const tasks =
+          (
+            taskResult.data ??
+            []
+          ) as HomeTask[];
+
+        const projects =
+          (
+            projectResult.data ??
+            []
+          ) as HomeProject[];
+
+        // ------------------------------------------------------
+        // LOCAL TODAY WINDOW
+        // ------------------------------------------------------
+
+        const now =
+          new Date();
+
+        const startToday =
+          new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate()
+          );
+
+        const startTomorrow =
+          new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate() + 1
+          );
+
+        const startTodayTime =
+          startToday.getTime();
+
+        const startTomorrowTime =
+          startTomorrow.getTime();
+
+        // ------------------------------------------------------
+        // TASK CLASSIFICATION
+        // ------------------------------------------------------
+
+        const overdueTasks =
+          tasks.filter(
+            (task) => {
+              if (
+                !task.due_at
+              ) {
+                return false;
+              }
+
+              const dueTime =
+                new Date(
+                  task.due_at
+                ).getTime();
+
+              return (
+                Number.isFinite(
+                  dueTime
+                ) &&
+                dueTime <
+                  startTodayTime
+              );
+            }
+          );
+
+        const dueTodayTasks =
+          tasks.filter(
+            (task) => {
+              if (
+                !task.due_at
+              ) {
+                return false;
+              }
+
+              const dueTime =
+                new Date(
+                  task.due_at
+                ).getTime();
+
+              return (
+                Number.isFinite(
+                  dueTime
+                ) &&
+                dueTime >=
+                  startTodayTime &&
+                dueTime <
+                  startTomorrowTime
+              );
+            }
+          );
+
+        // ------------------------------------------------------
+        // CHOOSE MOST RELEVANT TASK
+        //
+        // Order:
+        // 1. overdue
+        // 2. due today
+        // 3. upcoming due
+        // 4. no due date
+        //
+        // Then priority 5 → 1.
+        // ------------------------------------------------------
+
+        function taskBucket(
+          task: HomeTask
+        ) {
+          if (
+            !task.due_at
+          ) {
+            return 3;
+          }
+
+          const dueTime =
+            new Date(
+              task.due_at
+            ).getTime();
+
+          if (
+            !Number.isFinite(
+              dueTime
+            )
+          ) {
+            return 3;
+          }
+
+          if (
+            dueTime <
+            startTodayTime
+          ) {
+            return 0;
+          }
+
+          if (
+            dueTime <
+            startTomorrowTime
+          ) {
+            return 1;
+          }
+
+          return 2;
+        }
+
+        const rankedTasks =
+          [...tasks].sort(
+            (
+              first,
+              second
+            ) => {
+              const bucketDifference =
+                taskBucket(
+                  first
+                ) -
+                taskBucket(
+                  second
+                );
+
+              if (
+                bucketDifference !==
+                0
+              ) {
+                return bucketDifference;
+              }
+
+              const priorityDifference =
+                second.priority -
+                first.priority;
+
+              if (
+                priorityDifference !==
+                0
+              ) {
+                return priorityDifference;
+              }
+
+              const firstDue =
+                first.due_at
+                  ? new Date(
+                      first.due_at
+                    ).getTime()
+                  : Number
+                      .POSITIVE_INFINITY;
+
+              const secondDue =
+                second.due_at
+                  ? new Date(
+                      second.due_at
+                    ).getTime()
+                  : Number
+                      .POSITIVE_INFINITY;
+
+              return (
+                firstDue -
+                secondDue
+              );
+            }
+          );
+
+        setDailyIntelligence({
+          openTaskCount:
+            tasks.length,
+
+          overdueCount:
+            overdueTasks.length,
+
+          dueTodayCount:
+            dueTodayTasks.length,
+
+          activeProjectCount:
+            projects.length,
+
+          priorityTask:
+            rankedTasks[0] ??
+            null,
+
+          // Projects were already sorted by
+          // priority and recent activity.
+          priorityProject:
+            projects[0] ??
+            null,
+        });
+      } catch (error) {
+        console.warn(
+          'A2 home intelligence load error:',
+          error
+        );
+
+        // Home intelligence should never
+        // break the main A2 experience.
+        setDailyIntelligence(
+          EMPTY_DAILY_INTELLIGENCE
+        );
+      } finally {
+        setDailyLoading(false);
+      }
+    },
+    [
+      session?.user?.id,
+    ]
+  );
+// ------------------------------------------------------------
+// A2 HOME BRIEF
+// ------------------------------------------------------------
+
+const loadHomeBrief =
+  useCallback(
+    async () => {
+      const userId =
+        session?.user?.id;
+
+      if (
+        !userId ||
+        homeBriefRequestRef.current
+      ) {
+        return;
+      }
+
+      homeBriefRequestRef.current =
+        true;
+
+      setHomeBriefLoading(
+        true
+      );
+
+      try {
+        const timezone =
+          Intl
+            .DateTimeFormat()
+            .resolvedOptions()
+            .timeZone ||
+          'UTC';
+
+        const {
+          data,
+          error,
+        } =
+          await supabase
+            .functions
+            .invoke(
+              'a2-home-brief',
+              {
+                body: {
+                  client_now:
+                    new Date()
+                      .toISOString(),
+
+                  client_timezone:
+                    timezone,
+
+                  previous_signature:
+                    homeBriefSignatureRef
+                      .current,
+                },
+              }
+            );
+
+        if (
+          error
+        ) {
+          console.warn(
+            'A2 Home brief invoke error:',
+            error
+          );
+
+          return;
+        }
+
+        if (
+          typeof data
+            ?.signature ===
+            'string'
+        ) {
+          homeBriefSignatureRef.current =
+            data.signature;
+        }
+
+        // Nothing changed since the last brief.
+        // Keep the current sentence exactly as-is.
+        if (
+          data?.unchanged ===
+          true
+        ) {
+          return;
+        }
+
+        const brief =
+          typeof data?.brief ===
+            'string'
+            ? data.brief
+                .replace(
+                  /\s+/g,
+                  ' '
+                )
+                .trim()
+            : '';
+
+        if (
+          brief
+        ) {
+          setHomeBrief(
+            brief
+          );
+        }
+      } catch (
+        error
+      ) {
+        console.warn(
+          'A2 Home brief error:',
+          error
+        );
+      } finally {
+        homeBriefRequestRef.current =
+          false;
+
+        setHomeBriefLoading(
+          false
+        );
+      }
+    },
+    [
+      session?.user?.id,
+    ]
+  );
+// Refresh whenever Home becomes active again.
+useFocusEffect(
+  useCallback(
+    () => {
+      void loadDailyIntelligence();
+
+      void loadHomeBrief();
+    },
+    [
+      loadDailyIntelligence,
+      loadHomeBrief,
+    ]
+  )
+);
 
   // ------------------------------------------------------------
   // RESPONSIVE SIZE CALCULATIONS
@@ -271,7 +869,14 @@ export default function HomeScreen() {
         );
       }
 
-      setReply(data.reply);
+      setReply(
+  data.reply
+);
+
+// A2 may have changed a task or project.
+void loadDailyIntelligence();
+
+void loadHomeBrief();
     } catch (error) {
       console.error(
         'A2 request error:',
@@ -347,6 +952,26 @@ export default function HomeScreen() {
         );
       },
   });
+// Refresh Home after a completed
+// Live Voice response.
+// This also captures Live task/project changes.
+
+useEffect(() => {
+  if (
+    liveVoiceConnected &&
+    liveVoiceStatus ===
+      'ready'
+  ) {
+    void loadDailyIntelligence();
+
+    void loadHomeBrief();
+  }
+}, [
+  liveVoiceConnected,
+  liveVoiceStatus,
+  loadDailyIntelligence,
+  loadHomeBrief,
+]);
     // ------------------------------------------------------------
   // ORB VOICE CONTROLS
   // ------------------------------------------------------------
@@ -356,6 +981,56 @@ export default function HomeScreen() {
     liveVoiceConnected ||
     liveVoiceStatus ===
       'connecting';
+
+      // ------------------------------------------------------------
+// HOME INTELLIGENCE DISPLAY
+// ------------------------------------------------------------
+
+const todayHeadline =
+  dailyLoading
+    ? 'SYNCING'
+    : dailyIntelligence
+          .overdueCount >
+        0
+      ? `${dailyIntelligence.overdueCount} OVERDUE · ${dailyIntelligence.dueTodayCount} TODAY`
+      : dailyIntelligence
+            .dueTodayCount >
+          0
+        ? `${dailyIntelligence.dueTodayCount} DUE TODAY`
+        : dailyIntelligence
+              .openTaskCount >
+            0
+          ? `${dailyIntelligence.openTaskCount} OPEN`
+          : 'CLEAR';
+
+const todayDetail =
+  dailyLoading
+    ? 'Checking priorities…'
+    : dailyIntelligence
+          .priorityTask
+        ?.title ??
+      'Nothing pressing';
+
+const projectsHeadline =
+  dailyLoading
+    ? 'SYNCING'
+    : dailyIntelligence
+          .activeProjectCount >
+        0
+      ? `${dailyIntelligence.activeProjectCount} ACTIVE`
+      : 'NO ACTIVE PROJECTS';
+
+const projectsDetail =
+  dailyLoading
+    ? 'Checking projects…'
+    : dailyIntelligence
+          .priorityProject
+      ? dailyIntelligence
+          .priorityProject
+          .next_step
+        ? `${dailyIntelligence.priorityProject.name} · ${dailyIntelligence.priorityProject.next_step}`
+        : `${dailyIntelligence.priorityProject.name} · Next step not set`
+      : 'No project needs attention';
 
   async function handleOrbPress() {
     // If Live A2 is running,
@@ -757,18 +1432,178 @@ orbVoiceActive &&
                 </Text>
               </ScrollView>
             </View>
-          ) : lastPrompt ? (
-            <Text
-              style={styles.lastPrompt}
-              numberOfLines={2}
+) : lastPrompt ? (
+  <Text
+    style={styles.lastPrompt}
+    numberOfLines={2}
+  >
+    {lastPrompt}
+  </Text>
+) : homeBrief ? (
+  <View
+    style={
+      styles.homeBriefShell
+    }
+  >
+    <Text
+      style={
+        styles.homeBriefLabel
+      }
+    >
+      A2 BRIEF
+    </Text>
+
+    <Text
+      style={
+        styles.homeBriefText
+      }
+    >
+      {
+        homeBrief
+      }
+    </Text>
+  </View>
+) : homeBriefLoading ? (
+  <Text
+    style={
+      styles.homeBriefLoading
+    }
+  >
+    Checking your day…
+  </Text>
+) : (
+  <Text
+    style={
+      styles.question
+    }
+  >
+    What do you need?
+  </Text>
+)}
+        </View>
+
+        {/* ---------------------------------------------------- */}
+        {/* DAILY INTELLIGENCE                                   */}
+        {/* ---------------------------------------------------- */}
+
+        <View
+          style={
+            styles.intelligenceBar
+          }
+        >
+          <Pressable
+            onPress={() =>
+              router.push(
+                '/today'
+              )
+            }
+            style={
+              styles.intelligenceCard
+            }
+            accessibilityRole="button"
+            accessibilityLabel="Open Today"
+          >
+            <View
+              style={
+                styles.intelligenceTop
+              }
             >
-              {lastPrompt}
+              <Text
+                style={
+                  styles.intelligenceLabel
+                }
+              >
+                TODAY
+              </Text>
+
+              <Text
+                style={
+                  styles.intelligenceArrow
+                }
+              >
+                →
+              </Text>
+            </View>
+
+            <Text
+              style={
+                styles.intelligenceHeadline
+              }
+              numberOfLines={1}
+            >
+              {
+                todayHeadline
+              }
             </Text>
-          ) : (
-            <Text style={styles.question}>
-              What do you need?
+
+            <Text
+              style={
+                styles.intelligenceDetail
+              }
+              numberOfLines={1}
+            >
+              {
+                todayDetail
+              }
             </Text>
-          )}
+          </Pressable>
+
+          <Pressable
+            onPress={() =>
+              router.push(
+                '/projects'
+              )
+            }
+            style={
+              styles.intelligenceCard
+            }
+            accessibilityRole="button"
+            accessibilityLabel="Open Projects"
+          >
+            <View
+              style={
+                styles.intelligenceTop
+              }
+            >
+              <Text
+                style={
+                  styles.intelligenceLabel
+                }
+              >
+                PROJECTS
+              </Text>
+
+              <Text
+                style={
+                  styles.intelligenceArrow
+                }
+              >
+                →
+              </Text>
+            </View>
+
+            <Text
+              style={
+                styles.intelligenceHeadline
+              }
+              numberOfLines={1}
+            >
+              {
+                projectsHeadline
+              }
+            </Text>
+
+            <Text
+              style={
+                styles.intelligenceDetail
+              }
+              numberOfLines={1}
+            >
+              {
+                projectsDetail
+              }
+            </Text>
+          </Pressable>
         </View>
 
         {/* ---------------------------------------------------- */}
@@ -1042,6 +1877,52 @@ brand: {
     textAlign: 'center',
   },
 
+  homeBriefShell: {
+  width: '100%',
+  maxWidth: 620,
+
+  alignItems: 'center',
+
+  paddingHorizontal: 20,
+},
+
+homeBriefLabel: {
+  marginBottom: 9,
+
+  fontSize: 7,
+  fontWeight: '600',
+
+  letterSpacing: 2,
+
+  color:
+    'rgba(36, 35, 32, 0.28)',
+},
+
+homeBriefText: {
+  maxWidth: 600,
+
+  textAlign: 'center',
+
+  fontSize: 17,
+  lineHeight: 25,
+
+  fontWeight: '400',
+
+  letterSpacing: -0.2,
+
+  color:
+    'rgba(36, 35, 32, 0.82)',
+},
+
+homeBriefLoading: {
+  textAlign: 'center',
+
+  fontSize: 13,
+
+  color:
+    'rgba(36, 35, 32, 0.34)',
+},
+
   lastPrompt: {
     maxWidth: 520,
     marginTop: 25,
@@ -1053,6 +1934,82 @@ brand: {
     color: '#25241F',
   },
 
+  intelligenceBar: {
+  width: '100%',
+  maxWidth: 640,
+  alignSelf: 'center',
+
+  flexDirection: 'row',
+  gap: 10,
+
+  paddingHorizontal: 20,
+  marginBottom: 12,
+},
+
+intelligenceCard: {
+  flex: 1,
+  minWidth: 0,
+  minHeight: 72,
+
+  paddingHorizontal: 14,
+  paddingVertical: 11,
+
+  borderRadius: 18,
+  borderWidth: 1,
+
+  borderColor:
+    'rgba(35, 33, 29, 0.065)',
+
+  backgroundColor:
+    'rgba(255, 255, 255, 0.28)',
+},
+
+intelligenceTop: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent:
+    'space-between',
+},
+
+intelligenceLabel: {
+  fontSize: 7,
+  fontWeight: '600',
+
+  letterSpacing: 1.6,
+
+  color:
+    'rgba(36, 35, 32, 0.32)',
+},
+
+intelligenceArrow: {
+  fontSize: 12,
+
+  color:
+    'rgba(36, 35, 32, 0.26)',
+},
+
+intelligenceHeadline: {
+  marginTop: 7,
+
+  fontSize: 10,
+  fontWeight: '600',
+
+  letterSpacing: 0.8,
+
+  color:
+    'rgba(36, 35, 32, 0.72)',
+},
+
+intelligenceDetail: {
+  marginTop: 5,
+
+  fontSize: 11,
+  lineHeight: 15,
+
+  color:
+    'rgba(36, 35, 32, 0.43)',
+},
+  
   composerArea: {
     width: '100%',
     alignItems: 'center',

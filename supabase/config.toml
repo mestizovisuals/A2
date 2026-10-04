@@ -468,3 +468,7 @@ entrypoint = "./functions/a2-live-sync/index.ts"
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/a2-live-sync/*.html" ]
 
+[functions.a2-home-brief]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/a2-home-brief/index.ts"
