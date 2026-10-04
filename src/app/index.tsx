@@ -129,6 +129,12 @@ const [
 ] =
   useState(false);
 
+  const [
+  unreadNotificationCount,
+  setUnreadNotificationCount,
+] =
+  useState(0);
+
 const homeBriefSignatureRef =
   useRef<string | null>(
     null
@@ -144,63 +150,143 @@ const homeBriefRequestRef =
   const drift = useRef(new Animated.Value(0)).current;
   const breathe = useRef(new Animated.Value(0)).current;
 
-  // ------------------------------------------------------------
-  // RESTORE / WATCH SUPABASE SESSION
-  // ------------------------------------------------------------
+// ------------------------------------------------------------
+// RESTORE / WATCH SUPABASE SESSION
+// ------------------------------------------------------------
 
-  useEffect(() => {
-    let mounted = true;
+useEffect(() => {
+  let mounted = true;
 
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (!mounted) {
-        return;
+  supabase.auth
+    .getSession()
+    .then(
+      ({
+        data,
+        error,
+      }) => {
+        if (!mounted) {
+          return;
+        }
+
+        if (error) {
+          console.error(
+            'A2 session restore error:',
+            error
+          );
+        }
+
+        setSession(
+          data.session
+        );
+
+        setAuthLoading(
+          false
+        );
       }
-
-      if (error) {
-        console.error('A2 session restore error:', error);
-      }
-
-      setSession(data.session);
-      setAuthLoading(false);
-    });
-
-const {
-  data: { subscription },
-} = supabase.auth.onAuthStateChange(
-  (_event, nextSession) => {
-    setSession(
-      nextSession
     );
 
-    setAuthLoading(
-      false
-    );
+  const {
+    data: {
+      subscription,
+    },
+  } =
+    supabase.auth
+      .onAuthStateChange(
+        (
+          _event,
+          nextSession
+        ) => {
+          setSession(
+            nextSession
+          );
 
-    // Clear private Home intelligence
-    // whenever the authenticated session ends.
-    if (
-      !nextSession
-    ) {
-      setHomeBrief('');
+          setAuthLoading(
+            false
+          );
 
-      setDailyIntelligence(
-        EMPTY_DAILY_INTELLIGENCE
+          // Clear private Home intelligence
+          // whenever the authenticated
+          // session ends.
+if (
+  !nextSession
+) {
+  setHomeBrief('');
+
+  setDailyIntelligence(
+    EMPTY_DAILY_INTELLIGENCE
+  );
+
+  setUnreadNotificationCount(
+    0
+  );
+
+  homeBriefSignatureRef.current =
+    null;
+
+  homeBriefRequestRef.current =
+    false;
+}
+        }
       );
 
-      homeBriefSignatureRef.current =
-        null;
+  return () => {
+    mounted = false;
 
-      homeBriefRequestRef.current =
-        false;
-    }
+    subscription
+      .unsubscribe();
+  };
+}, []);
+
+// ------------------------------------------------------------
+// SYNC USER TIMEZONE
+// ------------------------------------------------------------
+
+useEffect(() => {
+  const userId =
+    session?.user?.id;
+
+  if (!userId) {
+    return;
   }
-);
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+  const timezone =
+    Intl
+      .DateTimeFormat()
+      .resolvedOptions()
+      .timeZone ||
+    'UTC';
+
+  void supabase
+    .from(
+      'notification_preferences'
+    )
+    .upsert(
+      {
+        user_id:
+          userId,
+
+        timezone,
+      },
+      {
+        onConflict:
+          'user_id',
+      }
+    )
+    .then(
+      ({
+        error,
+      }) => {
+        if (error) {
+          console.warn(
+            'A2 timezone sync error:',
+            error
+          );
+        }
+      }
+    );
+}, [
+  session?.user?.id,
+]);
 
   // ------------------------------------------------------------
   // A2 CORE ANIMATION
@@ -741,16 +827,92 @@ const loadHomeBrief =
     ]
   );
 // Refresh whenever Home becomes active again.
+// ------------------------------------------------------------
+// UNREAD NOTIFICATIONS
+// ------------------------------------------------------------
+
+const loadUnreadNotifications =
+  useCallback(
+    async () => {
+      const userId =
+        session?.user?.id;
+
+      if (!userId) {
+        setUnreadNotificationCount(
+          0
+        );
+
+        return;
+      }
+
+      try {
+        const {
+          count,
+          error,
+        } =
+          await supabase
+            .from(
+              'notifications'
+            )
+            .select(
+              '*',
+              {
+                count:
+                  'exact',
+
+                head:
+                  true,
+              }
+            )
+            .eq(
+              'user_id',
+              userId
+            )
+            .in(
+              'status',
+              [
+                'pending',
+                'delivered',
+              ]
+            );
+
+        if (
+          error
+        ) {
+          throw error;
+        }
+
+        setUnreadNotificationCount(
+          count ??
+          0
+        );
+      } catch (
+        error
+      ) {
+        console.warn(
+          'A2 unread notification count error:',
+          error
+        );
+      }
+    },
+    [
+      session?.user?.id,
+    ]
+  );
+
 useFocusEffect(
   useCallback(
     () => {
       void loadDailyIntelligence();
 
       void loadHomeBrief();
+
+      void loadUnreadNotifications();
     },
     [
       loadDailyIntelligence,
       loadHomeBrief,
+      loadUnreadNotifications,
     ]
   )
 );
@@ -1199,14 +1361,69 @@ const projectsDetail =
         {/* HEADER                                               */}
         {/* ---------------------------------------------------- */}
 
-        <View style={styles.header}>
+<View
+  style={
+    styles.header
+  }
+>
   <Pressable
-    onPress={() => router.push('/memory')}
-    style={styles.brandButton}
+    onPress={() =>
+      router.push(
+        '/memory'
+      )
+    }
+    style={
+      styles.brandButton
+    }
     accessibilityRole="button"
     accessibilityLabel="Open A2 Memory and Identity"
   >
-    <Text style={styles.brand}>A2</Text>
+    <Text
+      style={
+        styles.brand
+      }
+    >
+      A2
+    </Text>
+  </Pressable>
+
+  <Pressable
+    onPress={() =>
+      router.push(
+        '/notifications'
+      )
+    }
+    style={
+      styles.notificationButton
+    }
+    accessibilityRole="button"
+    accessibilityLabel="Open A2 Notifications"
+  >
+    <View
+      style={
+        styles.notificationGlyph
+      }
+    />
+
+    {unreadNotificationCount >
+      0 && (
+      <View
+        style={
+          styles.notificationBadge
+        }
+      >
+        <Text
+          style={
+            styles.notificationBadgeText
+          }
+        >
+          {unreadNotificationCount >
+          9
+            ? '9+'
+            : unreadNotificationCount}
+        </Text>
+      </View>
+    )}
   </Pressable>
 </View>
 
@@ -1693,6 +1910,68 @@ brand: {
   fontWeight: '600',
   letterSpacing: 5,
   color: '#22211E',
+},
+
+notificationButton: {
+  position:
+    'absolute',
+
+  right: 24,
+
+  width: 44,
+  height: 44,
+
+  alignItems:
+    'center',
+
+  justifyContent:
+    'center',
+},
+
+notificationGlyph: {
+  width: 11,
+  height: 11,
+
+  borderRadius: 6,
+
+  borderWidth: 1,
+
+  borderColor:
+    'rgba(36,35,32,0.46)',
+},
+
+notificationBadge: {
+  position:
+    'absolute',
+
+  top: 5,
+  right: 3,
+
+  minWidth: 16,
+  height: 16,
+
+  paddingHorizontal: 4,
+
+  borderRadius: 8,
+
+  alignItems:
+    'center',
+
+  justifyContent:
+    'center',
+
+  backgroundColor:
+    '#262520',
+},
+
+notificationBadgeText: {
+  color:
+    '#F3F1EC',
+
+  fontSize: 7,
+
+  fontWeight:
+    '600',
 },
 
   globeGrid: {
